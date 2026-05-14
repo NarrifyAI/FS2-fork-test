@@ -5,7 +5,7 @@ import os
 import numpy as np
 from torch.utils.data import Dataset
 
-from text import text_to_sequence
+from text import load_phoneme_inventory, text_to_sequence
 from utils.tools import pad_1D, pad_2D
 
 
@@ -29,6 +29,9 @@ class Dataset(Dataset):
         self.basename, self.speaker, self.text, self.raw_text = self.process_meta(
             filename
         )
+        self.phoneme_inventory = load_phoneme_inventory(
+            os.path.join(self.preprocessed_path, "phoneme_inventory.json")
+        )
         with open(os.path.join(self.preprocessed_path, "speakers.json")) as f:
             self.speaker_map = json.load(f)
         self.sort = sort
@@ -42,7 +45,9 @@ class Dataset(Dataset):
         speaker = self.speaker[idx]
         speaker_id = self.speaker_map[speaker]
         raw_text = self.raw_text[idx]
-        phone = np.array(text_to_sequence(self.text[idx], self.cleaners))
+        phone = np.array(
+            text_to_sequence(self.text[idx], self.cleaners, self.phoneme_inventory)
+        )
         mel_path = os.path.join(
             self.preprocessed_path,
             "mel",
@@ -206,13 +211,17 @@ class Dataset(Dataset):
 class TextDataset(Dataset):
     def __init__(self, filepath, preprocess_config):
         self.cleaners = preprocess_config["preprocessing"]["text"]["text_cleaners"]
+        self.preprocessed_path = preprocess_config["path"]["preprocessed_path"]
 
         self.basename, self.speaker, self.text, self.raw_text = self.process_meta(
             filepath
         )
+        self.phoneme_inventory = load_phoneme_inventory(
+            os.path.join(self.preprocessed_path, "phoneme_inventory.json")
+        )
         with open(
             os.path.join(
-                preprocess_config["path"]["preprocessed_path"], "speakers.json"
+                self.preprocessed_path, "speakers.json"
             )
         ) as f:
             self.speaker_map = json.load(f)
@@ -225,7 +234,9 @@ class TextDataset(Dataset):
         speaker = self.speaker[idx]
         speaker_id = self.speaker_map[speaker]
         raw_text = self.raw_text[idx]
-        phone = np.array(text_to_sequence(self.text[idx], self.cleaners))
+        phone = np.array(
+            text_to_sequence(self.text[idx], self.cleaners, self.phoneme_inventory)
+        )
 
         return (basename, speaker_id, phone, raw_text)
 

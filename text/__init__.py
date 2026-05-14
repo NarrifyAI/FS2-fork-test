@@ -1,4 +1,6 @@
 """ from https://github.com/keithito/tacotron """
+import json
+import os
 import re
 from text import cleaners
 from text.symbols import symbols
@@ -12,7 +14,23 @@ _id_to_symbol = {i: s for i, s in enumerate(symbols)}
 _curly_re = re.compile(r"(.*?)\{(.+?)\}(.*)")
 
 
-def text_to_sequence(text, cleaner_names):
+def load_phoneme_inventory(path):
+    if not path or not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    if not isinstance(raw, dict):
+        return None
+    inventory = {}
+    for key, value in raw.items():
+        try:
+            inventory[str(key)] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return inventory or None
+
+
+def text_to_sequence(text, cleaner_names, phoneme_inventory=None):
     """Converts a string of text to a sequence of IDs corresponding to the symbols in the text.
 
     The text can optionally have ARPAbet sequences enclosed in curly braces embedded
@@ -35,7 +53,10 @@ def text_to_sequence(text, cleaner_names):
             sequence += _symbols_to_sequence(_clean_text(text, cleaner_names))
             break
         sequence += _symbols_to_sequence(_clean_text(m.group(1), cleaner_names))
-        sequence += _arpabet_to_sequence(m.group(2))
+        if phoneme_inventory is not None:
+            sequence += _inventory_phonemes_to_sequence(m.group(2), phoneme_inventory)
+        else:
+            sequence += _arpabet_to_sequence(m.group(2))
         text = m.group(3)
 
     return sequence
@@ -69,6 +90,11 @@ def _symbols_to_sequence(symbols):
 
 def _arpabet_to_sequence(text):
     return _symbols_to_sequence(["@" + s for s in text.split()])
+
+
+def _inventory_phonemes_to_sequence(text, phoneme_inventory):
+    unk_id = phoneme_inventory.get("<unk>", 1)
+    return [phoneme_inventory.get(token, unk_id) for token in text.split()]
 
 
 def _should_keep_symbol(s):

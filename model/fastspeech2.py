@@ -15,6 +15,21 @@ class FastSpeech2(nn.Module):
 
     def __init__(self, preprocess_config, model_config):
         super(FastSpeech2, self).__init__()
+        inventory_path = os.path.join(
+            preprocess_config["path"]["preprocessed_path"], "phoneme_inventory.json"
+        )
+        if os.path.exists(inventory_path):
+            with open(inventory_path, "r", encoding="utf-8") as f:
+                inventory = json.load(f)
+            if isinstance(inventory, dict) and inventory:
+                ids = []
+                for value in inventory.values():
+                    try:
+                        ids.append(int(value))
+                    except (TypeError, ValueError):
+                        pass
+                if ids:
+                    model_config["n_src_vocab"] = max(ids) + 1
         self.model_config = model_config
 
         self.encoder = Encoder(model_config)

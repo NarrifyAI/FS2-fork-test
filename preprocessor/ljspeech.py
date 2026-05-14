@@ -3,7 +3,9 @@ import os
 import librosa
 import numpy as np
 from scipy.io import wavfile
-from tqdm import tqdm
+from forge_utils import progress
+
+_progress_bar = progress.tqdm
 
 from text import _clean_text
 
@@ -16,7 +18,7 @@ def prepare_align(config):
     cleaners = config["preprocessing"]["text"]["text_cleaners"]
     speaker = "LJSpeech"
     with open(os.path.join(in_dir, "metadata.csv"), encoding="utf-8") as f:
-        for line in tqdm(f):
+        for line in _progress_bar(f):
             parts = line.strip().split("|")
             base_name = parts[0]
             text = parts[2]

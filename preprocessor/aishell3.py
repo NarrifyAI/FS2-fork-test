@@ -3,7 +3,9 @@ import os
 import librosa
 import numpy as np
 from scipy.io import wavfile
-from tqdm import tqdm
+from forge_utils import progress
+
+_progress_bar = progress.tqdm
 
 
 def prepare_align(config):
@@ -14,7 +16,7 @@ def prepare_align(config):
     for dataset in ["train", "test"]:
         print("Processing {}ing set...".format(dataset))
         with open(os.path.join(in_dir, dataset, "content.txt"), encoding="utf-8") as f:
-            for line in tqdm(f):
+            for line in _progress_bar(f):
                 wav_name, text = line.strip("\n").split("\t")
                 speaker = wav_name[:7]
                 text = text.split(" ")[1::2]

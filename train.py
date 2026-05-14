@@ -9,7 +9,9 @@ import yaml
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
+from forge_utils import progress
+
+_progress_bar = progress.tqdm
 
 from utils.model import get_model, get_vocoder, get_param_num
 from utils.tools import to_device, log, synth_one_sample
@@ -266,13 +268,13 @@ def main(args, configs):
     synth_step = int(train_config["step"].get("synth_step", 0) or 0)
     val_step = int(train_config["step"].get("val_step", 0) or 0)
 
-    outer_bar = tqdm(total=total_step, desc="Training", position=0)
+    outer_bar = _progress_bar(total=total_step, desc="Training", position=0)
     outer_bar.n = max(0, step - 1)
     outer_bar.refresh()
 
     try:
         while step <= total_step:
-            inner_bar = tqdm(total=len(loader), desc="Epoch {}".format(epoch), position=1)
+            inner_bar = _progress_bar(total=len(loader), desc="Epoch {}".format(epoch), position=1)
             for batchs in loader:
                 for batch in batchs:
                     batch = to_device(batch, device)

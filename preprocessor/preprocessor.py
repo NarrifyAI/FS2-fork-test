@@ -8,7 +8,9 @@ import numpy as np
 import pyworld as pw
 from scipy.interpolate import interp1d
 from sklearn.preprocessing import StandardScaler
-from tqdm import tqdm
+from forge_utils import progress
+
+_progress_bar = progress.tqdm
 
 import audio as Audio
 
@@ -73,7 +75,7 @@ class Preprocessor:
 
         # Compute pitch, energy, duration, and mel-spectrogram
         speakers = {}
-        for i, speaker in enumerate(tqdm(os.listdir(self.in_dir))):
+        for i, speaker in enumerate(_progress_bar(os.listdir(self.in_dir))):
             speakers[speaker] = i
             for wav_name in os.listdir(os.path.join(self.in_dir, speaker)):
                 if ".wav" not in wav_name:

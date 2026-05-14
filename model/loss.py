@@ -13,18 +13,19 @@ class FastSpeech2Loss(nn.Module):
         self.energy_feature_level = preprocess_config["preprocessing"]["energy"][
             "feature"
         ]
+        prosody_config = model_config.get("prosody_conditioning", {})
+        self.external_frame_prosody = prosody_config.get("mode") == "external_frame"
+        self.train_variance_predictors = prosody_config.get(
+            "train_variance_predictors", not self.external_frame_prosody
+        )
         self.mse_loss = nn.MSELoss()
         self.mae_loss = nn.L1Loss()
 
     def forward(self, inputs, predictions):
-        (
-            mel_targets,
-            _,
-            _,
-            pitch_targets,
-            energy_targets,
-            duration_targets,
-        ) = inputs[6:]
+        mel_targets = inputs[6]
+        pitch_targets = inputs[9]
+        energy_targets = inputs[10]
+        duration_targets = inputs[11]
         (
             mel_predictions,
             postnet_mel_predictions,
@@ -48,17 +49,29 @@ class FastSpeech2Loss(nn.Module):
         energy_targets.requires_grad = False
         mel_targets.requires_grad = False
 
-        if self.pitch_feature_level == "phoneme_level":
+        if (
+            pitch_predictions is not None
+            and self.pitch_feature_level == "phoneme_level"
+        ):
             pitch_predictions = pitch_predictions.masked_select(src_masks)
             pitch_targets = pitch_targets.masked_select(src_masks)
-        elif self.pitch_feature_level == "frame_level":
+        elif (
+            pitch_predictions is not None
+            and self.pitch_feature_level == "frame_level"
+        ):
             pitch_predictions = pitch_predictions.masked_select(mel_masks)
             pitch_targets = pitch_targets.masked_select(mel_masks)
 
-        if self.energy_feature_level == "phoneme_level":
+        if (
+            energy_predictions is not None
+            and self.energy_feature_level == "phoneme_level"
+        ):
             energy_predictions = energy_predictions.masked_select(src_masks)
             energy_targets = energy_targets.masked_select(src_masks)
-        if self.energy_feature_level == "frame_level":
+        if (
+            energy_predictions is not None
+            and self.energy_feature_level == "frame_level"
+        ):
             energy_predictions = energy_predictions.masked_select(mel_masks)
             energy_targets = energy_targets.masked_select(mel_masks)
 
@@ -74,9 +87,21 @@ class FastSpeech2Loss(nn.Module):
         mel_loss = self.mae_loss(mel_predictions, mel_targets)
         postnet_mel_loss = self.mae_loss(postnet_mel_predictions, mel_targets)
 
-        pitch_loss = self.mse_loss(pitch_predictions, pitch_targets)
-        energy_loss = self.mse_loss(energy_predictions, energy_targets)
-        duration_loss = self.mse_loss(log_duration_predictions, log_duration_targets)
+        zero_loss = mel_loss.new_tensor(0.0)
+        if self.train_variance_predictors and pitch_predictions is not None:
+            pitch_loss = self.mse_loss(pitch_predictions, pitch_targets)
+        else:
+            pitch_loss = zero_loss
+        if self.train_variance_predictors and energy_predictions is not None:
+            energy_loss = self.mse_loss(energy_predictions, energy_targets)
+        else:
+            energy_loss = zero_loss
+        if self.train_variance_predictors:
+            duration_loss = self.mse_loss(
+                log_duration_predictions, log_duration_targets
+            )
+        else:
+            duration_loss = zero_loss
 
         total_loss = (
             mel_loss + postnet_mel_loss + duration_loss + pitch_loss + energy_loss

@@ -39,6 +39,12 @@ class Preprocessor:
 
         self.pitch_normalization = config["preprocessing"]["pitch"]["normalization"]
         self.energy_normalization = config["preprocessing"]["energy"]["normalization"]
+        self.prosody_config = config["preprocessing"].get("prosody", {})
+        self.use_frame_prosody = self.prosody_config.get("enabled", False)
+        self.prosody_features = self.prosody_config.get(
+            "features", ["log_pitch", "voiced", "energy"]
+        )
+        self.prosody_normalization = self.prosody_config.get("normalization", True)
 
         self.STFT = Audio.stft.TacotronSTFT(
             config["preprocessing"]["stft"]["filter_length"],
@@ -55,12 +61,15 @@ class Preprocessor:
         os.makedirs((os.path.join(self.out_dir, "pitch")), exist_ok=True)
         os.makedirs((os.path.join(self.out_dir, "energy")), exist_ok=True)
         os.makedirs((os.path.join(self.out_dir, "duration")), exist_ok=True)
+        if self.use_frame_prosody:
+            os.makedirs((os.path.join(self.out_dir, "prosody")), exist_ok=True)
 
         print("Processing Data ...")
         out = list()
         n_frames = 0
         pitch_scaler = StandardScaler()
         energy_scaler = StandardScaler()
+        prosody_scaler = StandardScaler() if self.use_frame_prosody else None
 
         # Compute pitch, energy, duration, and mel-spectrogram
         speakers = {}
@@ -74,18 +83,21 @@ class Preprocessor:
                 tg_path = os.path.join(
                     self.out_dir, "TextGrid", speaker, "{}.TextGrid".format(basename)
                 )
-                if os.path.exists(tg_path):
-                    ret = self.process_utterance(speaker, basename)
-                    if ret is None:
-                        continue
-                    else:
-                        info, pitch, energy, n = ret
-                    out.append(info)
+                if not os.path.exists(tg_path):
+                    continue
+                ret = self.process_utterance(speaker, basename)
+                if ret is None:
+                    continue
+                else:
+                    info, pitch, energy, prosody, n = ret
+                out.append(info)
 
                 if len(pitch) > 0:
                     pitch_scaler.partial_fit(pitch.reshape((-1, 1)))
                 if len(energy) > 0:
                     energy_scaler.partial_fit(energy.reshape((-1, 1)))
+                if self.use_frame_prosody and len(prosody) > 0:
+                    prosody_scaler.partial_fit(prosody)
 
                 n_frames += n
 
@@ -111,6 +123,24 @@ class Preprocessor:
         energy_min, energy_max = self.normalize(
             os.path.join(self.out_dir, "energy"), energy_mean, energy_std
         )
+        prosody_stats = None
+        if self.use_frame_prosody:
+            if self.prosody_normalization:
+                prosody_mean = prosody_scaler.mean_
+                prosody_std = prosody_scaler.scale_
+            else:
+                prosody_mean = np.zeros(len(self.prosody_features), dtype=np.float64)
+                prosody_std = np.ones(len(self.prosody_features), dtype=np.float64)
+            prosody_min, prosody_max = self.normalize_2d(
+                os.path.join(self.out_dir, "prosody"), prosody_mean, prosody_std
+            )
+            prosody_stats = {
+                "features": self.prosody_features,
+                "min": [float(v) for v in prosody_min],
+                "max": [float(v) for v in prosody_max],
+                "mean": [float(v) for v in prosody_mean],
+                "std": [float(v) for v in prosody_std],
+            }
 
         # Save files
         with open(os.path.join(self.out_dir, "speakers.json"), "w") as f:
@@ -131,6 +161,8 @@ class Preprocessor:
                     float(energy_std),
                 ],
             }
+            if prosody_stats is not None:
+                stats["prosody"] = prosody_stats
             f.write(json.dumps(stats))
 
         print(
@@ -194,6 +226,11 @@ class Preprocessor:
         mel_spectrogram, energy = Audio.tools.get_mel_from_wav(wav, self.STFT)
         mel_spectrogram = mel_spectrogram[:, : sum(duration)]
         energy = energy[: sum(duration)]
+        prosody = (
+            self.build_frame_prosody(pitch, energy)
+            if self.use_frame_prosody
+            else np.zeros((0, 0), dtype=np.float32)
+        )
 
         if self.pitch_phoneme_averaging:
             # perform linear interpolation
@@ -236,6 +273,9 @@ class Preprocessor:
 
         energy_filename = "{}-energy-{}.npy".format(speaker, basename)
         np.save(os.path.join(self.out_dir, "energy", energy_filename), energy)
+        if self.use_frame_prosody:
+            prosody_filename = "{}-prosody-{}.npy".format(speaker, basename)
+            np.save(os.path.join(self.out_dir, "prosody", prosody_filename), prosody)
 
         mel_filename = "{}-mel-{}.npy".format(speaker, basename)
         np.save(
@@ -247,8 +287,27 @@ class Preprocessor:
             "|".join([basename, speaker, text, raw_text]),
             self.remove_outlier(pitch),
             self.remove_outlier(energy),
+            prosody,
             mel_spectrogram.shape[1],
         )
+
+    def build_frame_prosody(self, pitch, energy):
+        values = []
+        voiced = pitch > 0
+        for feature in self.prosody_features:
+            if feature == "pitch":
+                values.append(pitch)
+            elif feature == "log_pitch":
+                log_pitch = np.zeros_like(pitch, dtype=np.float32)
+                log_pitch[voiced] = np.log(np.maximum(pitch[voiced], 1e-5))
+                values.append(log_pitch)
+            elif feature == "voiced":
+                values.append(voiced.astype(np.float32))
+            elif feature == "energy":
+                values.append(energy)
+            else:
+                raise ValueError(f"Unsupported frame prosody feature: {feature}")
+        return np.stack(values, axis=-1).astype(np.float32)
 
     def get_alignment(self, tier):
         sil_phones = ["sil", "sp", "spn"]
@@ -310,5 +369,18 @@ class Preprocessor:
 
             max_value = max(max_value, max(values))
             min_value = min(min_value, min(values))
+
+        return min_value, max_value
+
+    def normalize_2d(self, in_dir, mean, std):
+        max_value = np.full(len(mean), np.finfo(np.float64).min)
+        min_value = np.full(len(mean), np.finfo(np.float64).max)
+        for filename in os.listdir(in_dir):
+            filename = os.path.join(in_dir, filename)
+            values = (np.load(filename) - mean) / std
+            np.save(filename, values)
+
+            max_value = np.maximum(max_value, np.max(values, axis=0))
+            min_value = np.minimum(min_value, np.min(values, axis=0))
 
         return min_value, max_value

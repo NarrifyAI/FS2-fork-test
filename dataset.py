@@ -17,6 +17,14 @@ class Dataset(Dataset):
         self.preprocessed_path = preprocess_config["path"]["preprocessed_path"]
         self.cleaners = preprocess_config["preprocessing"]["text"]["text_cleaners"]
         self.batch_size = train_config["optimizer"]["batch_size"]
+        self.prosody_config = preprocess_config["preprocessing"].get("prosody", {})
+        self.use_frame_prosody = self.prosody_config.get("enabled", False)
+        self.prosody_features = self.prosody_config.get(
+            "features", ["log_pitch", "voiced", "energy"]
+        )
+        self.derive_missing_prosody = self.prosody_config.get(
+            "derive_from_pitch_energy", False
+        )
 
         self.basename, self.speaker, self.text, self.raw_text = self.process_meta(
             filename
@@ -59,6 +67,27 @@ class Dataset(Dataset):
             "{}-duration-{}.npy".format(speaker, basename),
         )
         duration = np.load(duration_path)
+        prosody = None
+        if self.use_frame_prosody:
+            prosody_path = os.path.join(
+                self.preprocessed_path,
+                "prosody",
+                "{}-prosody-{}.npy".format(speaker, basename),
+            )
+            if os.path.exists(prosody_path):
+                prosody = np.load(prosody_path)
+            elif self.derive_missing_prosody:
+                prosody = self.build_frame_prosody(pitch, energy)
+            else:
+                raise FileNotFoundError(
+                    f"Missing frame prosody file for {speaker}/{basename}: "
+                    f"{prosody_path}"
+                )
+            if prosody.shape[0] != mel.shape[0]:
+                raise ValueError(
+                    f"Prosody frame count mismatch for {speaker}/{basename}: "
+                    f"prosody={prosody.shape[0]}, mel={mel.shape[0]}"
+                )
 
         sample = {
             "id": basename,
@@ -70,8 +99,28 @@ class Dataset(Dataset):
             "energy": energy,
             "duration": duration,
         }
+        if prosody is not None:
+            sample["prosody"] = prosody
 
         return sample
+
+    def build_frame_prosody(self, pitch, energy):
+        values = []
+        voiced = pitch > 0
+        for feature in self.prosody_features:
+            if feature == "pitch":
+                values.append(pitch)
+            elif feature == "log_pitch":
+                log_pitch = np.zeros_like(pitch, dtype=np.float32)
+                log_pitch[voiced] = np.log(np.maximum(pitch[voiced], 1e-5))
+                values.append(log_pitch)
+            elif feature == "voiced":
+                values.append(voiced.astype(np.float32))
+            elif feature == "energy":
+                values.append(energy)
+            else:
+                raise ValueError(f"Unsupported frame prosody feature: {feature}")
+        return np.stack(values, axis=-1).astype(np.float32)
 
     def process_meta(self, filename):
         with open(
@@ -98,6 +147,9 @@ class Dataset(Dataset):
         pitches = [data[idx]["pitch"] for idx in idxs]
         energies = [data[idx]["energy"] for idx in idxs]
         durations = [data[idx]["duration"] for idx in idxs]
+        prosodies = (
+            [data[idx]["prosody"] for idx in idxs] if self.use_frame_prosody else None
+        )
 
         text_lens = np.array([text.shape[0] for text in texts])
         mel_lens = np.array([mel.shape[0] for mel in mels])
@@ -108,8 +160,10 @@ class Dataset(Dataset):
         pitches = pad_1D(pitches)
         energies = pad_1D(energies)
         durations = pad_1D(durations)
+        if prosodies is not None:
+            prosodies = pad_2D(prosodies)
 
-        return (
+        batch = (
             ids,
             raw_texts,
             speakers,
@@ -123,6 +177,9 @@ class Dataset(Dataset):
             energies,
             durations,
         )
+        if prosodies is not None:
+            batch = batch + (prosodies,)
+        return batch
 
     def collate_fn(self, data):
         data_size = len(data)

@@ -17,6 +17,7 @@ Some important hyper-parameters are explained here.
   However, in our experiments, we find that using phoneme-level features makes the prosody of the synthesized utterances more natural.
 - **pitch.normalization & energy.normalization**: to normalize the pitch and energy values or not. 
   The original paper did not normalize these values.
+- **prosody.enabled & prosody.features**: when enabled, preprocessing writes a frame-level ``prosody`` array aligned to mel frames. Supported default features are ``log_pitch``, ``voiced``, and ``energy``. This is intended for external frame-level prosody conditioning instead of the built-in pitch/energy bucket embeddings. Set ``derive_from_pitch_energy`` only for compatibility with old frame-level pitch/energy exports; fresh oracle runs should use explicit ``prosody`` files.
 
 ## train.yaml
 - **optimizer.grad_acc_step**: the number of batches of gradient accumulation before updating the model parameters and call optimizer.zero_grad(), which is useful if you wish to train the model with a large batch size but you do not have sufficient GPU memory.
@@ -25,5 +26,6 @@ Some important hyper-parameters are explained here.
 ## model.yaml
 - **transformer.decoder_layer**: the original paper used a 4-layer decoder, but we find it better to use a 6-layer decoder, especially for multi-speaker TTS.
 - **variance_embedding.pitch_quantization**: when the pitch values are normalized as specified in ``preprocess.yaml``, it is not valid to use log-scale quantization bins as proposed in the original paper, so we use linear-scaled bins instead. 
+- **prosody_conditioning.mode**: set to ``external_frame`` to inject continuous frame-level prosody features after the length regulator and before the decoder. In this mode, ``train_variance_predictors`` can be disabled so the renderer learns from oracle frame prosody rather than optimizing internal duration/pitch/energy predictors.
 - **multi_speaker**: to apply a speaker embedding table to enable multi-speaker TTS or not.
 - **vocoder.speaker**: should be set to 'universal' if any dataset other than LJSpeech is used.

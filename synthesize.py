@@ -1,17 +1,25 @@
 import re
 import argparse
+import os
 from string import punctuation
 
 import torch
 import yaml
 import numpy as np
 from torch.utils.data import DataLoader
-from g2p_en import G2p
-from pypinyin import pinyin, Style
+try:
+    from g2p_en import G2p
+except ImportError:
+    G2p = None
+try:
+    from pypinyin import pinyin, Style
+except ImportError:
+    pinyin = None
+    Style = None
 
 from utils.model import get_model, get_vocoder
 from utils.tools import to_device, synth_samples
-from dataset import TextDataset
+from dataset import Dataset, TextDataset
 from text import text_to_sequence
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -30,6 +38,8 @@ def read_lexicon(lex_path):
 
 
 def preprocess_english(text, preprocess_config):
+    if G2p is None:
+        raise RuntimeError("g2p_en is required for single English synthesis")
     text = text.rstrip(punctuation)
     lexicon = read_lexicon(preprocess_config["path"]["lexicon_path"])
 
@@ -57,6 +67,8 @@ def preprocess_english(text, preprocess_config):
 
 
 def preprocess_mandarin(text, preprocess_config):
+    if pinyin is None or Style is None:
+        raise RuntimeError("pypinyin is required for single Mandarin synthesis")
     lexicon = read_lexicon(preprocess_config["path"]["lexicon_path"])
 
     phones = []
@@ -88,24 +100,29 @@ def synthesize(model, step, configs, vocoder, batchs, control_values):
     preprocess_config, model_config, train_config = configs
     pitch_control, energy_control, duration_control = control_values
 
-    for batch in batchs:
-        batch = to_device(batch, device)
-        with torch.no_grad():
-            # Forward
-            output = model(
-                *(batch[2:]),
-                p_control=pitch_control,
-                e_control=energy_control,
-                d_control=duration_control
-            )
-            synth_samples(
-                batch,
-                output,
-                vocoder,
-                model_config,
-                preprocess_config,
-                train_config["path"]["result_path"],
-            )
+    for batch_group in batchs:
+        if isinstance(batch_group, list):
+            iterable = batch_group
+        else:
+            iterable = [batch_group]
+        for batch in iterable:
+            batch = to_device(batch, device)
+            with torch.no_grad():
+                # Forward
+                output = model(
+                    *(batch[2:]),
+                    p_control=pitch_control,
+                    e_control=energy_control,
+                    d_control=duration_control
+                )
+                synth_samples(
+                    batch,
+                    output,
+                    vocoder,
+                    model_config,
+                    preprocess_config,
+                    train_config["path"]["result_path"],
+                )
 
 
 if __name__ == "__main__":
@@ -189,11 +206,22 @@ if __name__ == "__main__":
 
     # Load vocoder
     vocoder = get_vocoder(model_config, device)
+    os.makedirs(train_config["path"]["result_path"], exist_ok=True)
 
     # Preprocess texts
     if args.mode == "batch":
         # Get dataset
-        dataset = TextDataset(args.source, preprocess_config)
+        prosody_mode = model_config.get("prosody_conditioning", {}).get("mode", "none")
+        if prosody_mode == "external_frame":
+            source_name = args.source
+            preprocessed_path = preprocess_config["path"]["preprocessed_path"]
+            if os.path.isabs(source_name):
+                source_name = os.path.relpath(source_name, preprocessed_path)
+            if os.path.dirname(source_name):
+                source_name = os.path.basename(source_name)
+            dataset = Dataset(source_name, preprocess_config, train_config)
+        else:
+            dataset = TextDataset(args.source, preprocess_config)
         batchs = DataLoader(
             dataset,
             batch_size=8,

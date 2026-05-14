@@ -1,10 +1,18 @@
 """ from https://github.com/keithito/tacotron """
 
-import inflect
 import re
 
 
-_inflect = inflect.engine()
+try:
+    import inflect
+
+    _inflect = inflect.engine()
+except ImportError:
+    class _FallbackInflect:
+        def number_to_words(self, number, **kwargs):
+            return str(number)
+
+    _inflect = _FallbackInflect()
 _comma_number_re = re.compile(r"([0-9][0-9\,]+[0-9])")
 _decimal_number_re = re.compile(r"([0-9]+\.[0-9]+)")
 _pounds_re = re.compile(r"£([0-9\,]*[0-9]+)")

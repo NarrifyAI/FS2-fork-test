@@ -28,3 +28,8 @@ preprocessing:
   energy:
     feature: "frame_level" # support 'phoneme_level' or 'frame_level'
     normalization: False
+  prosody:
+    enabled: True
+    features: ["log_pitch", "voiced", "energy"]
+    normalization: True
+    derive_from_pitch_energy: False

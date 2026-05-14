@@ -20,6 +20,13 @@ variance_embedding:
   energy_quantization: "linear" # support 'linear' or 'log', 'log' is allowed only if the energy values are not normalized during preprocessing
   n_bins: 256
 
+prosody_conditioning:
+  mode: "external_frame" # support 'none' or 'external_frame'
+  features: ["log_pitch", "voiced", "energy"]
+  hidden_size: 256
+  dropout: 0.1
+  train_variance_predictors: False
+
 # gst:
 #   use_gst: False
 #   conv_filters: [32, 32, 64, 64, 128, 128]

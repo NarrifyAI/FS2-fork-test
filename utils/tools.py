@@ -16,7 +16,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def to_device(data, device):
-    if len(data) == 12:
+    if len(data) in (12, 13):
         (
             ids,
             raw_texts,
@@ -30,7 +30,7 @@ def to_device(data, device):
             pitches,
             energies,
             durations,
-        ) = data
+        ) = data[:12]
 
         speakers = torch.from_numpy(speakers).long().to(device)
         texts = torch.from_numpy(texts).long().to(device)
@@ -41,7 +41,7 @@ def to_device(data, device):
         energies = torch.from_numpy(energies).to(device)
         durations = torch.from_numpy(durations).long().to(device)
 
-        return (
+        batch = (
             ids,
             raw_texts,
             speakers,
@@ -55,6 +55,10 @@ def to_device(data, device):
             energies,
             durations,
         )
+        if len(data) == 13:
+            prosodies = torch.from_numpy(data[12]).float().to(device)
+            batch = batch + (prosodies,)
+        return batch
 
     if len(data) == 6:
         (ids, raw_texts, speakers, texts, src_lens, max_src_len) = data
@@ -170,12 +174,26 @@ def synth_samples(targets, predictions, vocoder, model_config, preprocess_config
         mel_len = predictions[9][i].item()
         mel_prediction = predictions[1][i, :mel_len].detach().transpose(0, 1)
         duration = predictions[5][i, :src_len].detach().cpu().numpy()
-        if preprocess_config["preprocessing"]["pitch"]["feature"] == "phoneme_level":
+        if predictions[2] is None:
+            if preprocess_config["preprocessing"]["pitch"]["feature"] == "phoneme_level":
+                pitch = targets[9][i, :src_len].detach().cpu().numpy()
+                pitch = expand(pitch, targets[11][i, :src_len].detach().cpu().numpy())
+            else:
+                pitch = targets[9][i, :mel_len].detach().cpu().numpy()
+        elif preprocess_config["preprocessing"]["pitch"]["feature"] == "phoneme_level":
             pitch = predictions[2][i, :src_len].detach().cpu().numpy()
             pitch = expand(pitch, duration)
         else:
             pitch = predictions[2][i, :mel_len].detach().cpu().numpy()
-        if preprocess_config["preprocessing"]["energy"]["feature"] == "phoneme_level":
+        if predictions[3] is None:
+            if preprocess_config["preprocessing"]["energy"]["feature"] == "phoneme_level":
+                energy = targets[10][i, :src_len].detach().cpu().numpy()
+                energy = expand(
+                    energy, targets[11][i, :src_len].detach().cpu().numpy()
+                )
+            else:
+                energy = targets[10][i, :mel_len].detach().cpu().numpy()
+        elif preprocess_config["preprocessing"]["energy"]["feature"] == "phoneme_level":
             energy = predictions[3][i, :src_len].detach().cpu().numpy()
             energy = expand(energy, duration)
         else:

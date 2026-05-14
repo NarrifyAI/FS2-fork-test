@@ -23,6 +23,9 @@ class VarianceAdaptor(nn.Module):
         self.length_regulator = LengthRegulator()
         self.pitch_predictor = VariancePredictor(model_config)
         self.energy_predictor = VariancePredictor(model_config)
+        prosody_config = model_config.get("prosody_conditioning", {})
+        self.prosody_mode = prosody_config.get("mode", "none")
+        self.use_external_frame_prosody = self.prosody_mode == "external_frame"
 
         self.pitch_feature_level = preprocess_config["preprocessing"]["pitch"][
             "feature"
@@ -76,6 +79,35 @@ class VarianceAdaptor(nn.Module):
         self.energy_embedding = nn.Embedding(
             n_bins, model_config["transformer"]["encoder_hidden"]
         )
+        if self.use_external_frame_prosody:
+            prosody_dim = prosody_config.get("prosody_dim")
+            features = prosody_config.get("features", [])
+            preprocess_features = preprocess_config["preprocessing"].get(
+                "prosody", {}
+            ).get("features")
+            if preprocess_features is not None and features:
+                if list(preprocess_features) != list(features):
+                    raise ValueError(
+                        "preprocess prosody.features must match "
+                        "model prosody_conditioning.features"
+                    )
+            if prosody_dim is None:
+                prosody_dim = len(features)
+            if prosody_dim <= 0:
+                raise ValueError(
+                    "prosody_conditioning.mode=external_frame requires "
+                    "prosody_dim or a non-empty features list"
+                )
+            hidden_size = prosody_config.get(
+                "hidden_size", model_config["transformer"]["encoder_hidden"]
+            )
+            dropout = prosody_config.get("dropout", 0.0)
+            self.frame_prosody_conditioner = FrameProsodyConditioner(
+                prosody_dim,
+                model_config["transformer"]["encoder_hidden"],
+                hidden_size,
+                dropout,
+            )
 
     def get_pitch_embedding(self, x, target, mask, control):
         prediction = self.pitch_predictor(x, mask)
@@ -108,18 +140,27 @@ class VarianceAdaptor(nn.Module):
         pitch_target=None,
         energy_target=None,
         duration_target=None,
+        frame_prosody_target=None,
         p_control=1.0,
         e_control=1.0,
         d_control=1.0,
     ):
 
+        pitch_prediction = None
+        energy_prediction = None
         log_duration_prediction = self.duration_predictor(x, src_mask)
-        if self.pitch_feature_level == "phoneme_level":
+        if (
+            not self.use_external_frame_prosody
+            and self.pitch_feature_level == "phoneme_level"
+        ):
             pitch_prediction, pitch_embedding = self.get_pitch_embedding(
                 x, pitch_target, src_mask, p_control
             )
             x = x + pitch_embedding
-        if self.energy_feature_level == "phoneme_level":
+        if (
+            not self.use_external_frame_prosody
+            and self.energy_feature_level == "phoneme_level"
+        ):
             energy_prediction, energy_embedding = self.get_energy_embedding(
                 x, energy_target, src_mask, p_control
             )
@@ -128,6 +169,8 @@ class VarianceAdaptor(nn.Module):
         if duration_target is not None:
             x, mel_len = self.length_regulator(x, duration_target, max_len)
             duration_rounded = duration_target
+            if mel_mask is None:
+                mel_mask = get_mask_from_lengths(mel_len, max_len)
         else:
             duration_rounded = torch.clamp(
                 (torch.round(torch.exp(log_duration_prediction) - 1) * d_control),
@@ -136,12 +179,35 @@ class VarianceAdaptor(nn.Module):
             x, mel_len = self.length_regulator(x, duration_rounded, max_len)
             mel_mask = get_mask_from_lengths(mel_len)
 
-        if self.pitch_feature_level == "frame_level":
+        if self.use_external_frame_prosody:
+            if frame_prosody_target is None:
+                raise ValueError(
+                    "external_frame prosody conditioning requires frame_prosody_target"
+                )
+            if frame_prosody_target.dim() != 3:
+                raise ValueError(
+                    "frame_prosody_target must have shape [batch, frames, features]"
+                )
+            if frame_prosody_target.size(1) < x.size(1):
+                raise ValueError(
+                    "frame_prosody_target is shorter than the regulated frame sequence "
+                    f"({frame_prosody_target.size(1)} < {x.size(1)})"
+                )
+            frame_prosody_target = frame_prosody_target[:, : x.size(1), :]
+            x = x + self.frame_prosody_conditioner(frame_prosody_target, mel_mask)
+
+        if (
+            not self.use_external_frame_prosody
+            and self.pitch_feature_level == "frame_level"
+        ):
             pitch_prediction, pitch_embedding = self.get_pitch_embedding(
                 x, pitch_target, mel_mask, p_control
             )
             x = x + pitch_embedding
-        if self.energy_feature_level == "frame_level":
+        if (
+            not self.use_external_frame_prosody
+            and self.energy_feature_level == "frame_level"
+        ):
             energy_prediction, energy_embedding = self.get_energy_embedding(
                 x, energy_target, mel_mask, p_control
             )
@@ -156,6 +222,25 @@ class VarianceAdaptor(nn.Module):
             mel_len,
             mel_mask,
         )
+
+
+class FrameProsodyConditioner(nn.Module):
+    """Project continuous frame-level prosody features into decoder hidden space."""
+
+    def __init__(self, input_size, output_size, hidden_size, dropout):
+        super(FrameProsodyConditioner, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, output_size),
+        )
+
+    def forward(self, prosody, mask=None):
+        out = self.net(prosody)
+        if mask is not None:
+            out = out.masked_fill(mask.unsqueeze(-1), 0.0)
+        return out
 
 
 class LengthRegulator(nn.Module):

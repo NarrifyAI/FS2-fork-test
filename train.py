@@ -9,9 +9,9 @@ import yaml
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from forge_utils import progress
+from tqdm import tqdm
 
-_progress_bar = progress.tqdm
+_progress_bar = tqdm
 
 from utils.model import get_model, get_vocoder, get_param_num
 from utils.tools import to_device, log, synth_one_sample
@@ -28,16 +28,6 @@ except ImportError:  # pragma: no cover - optional Forge integration
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-_LOSS_METRICS = (
-    "total_loss",
-    "mel_loss",
-    "mel_postnet_loss",
-    "pitch_loss",
-    "energy_loss",
-    "duration_loss",
-)
-
 
 def _load_yaml(path):
     with open(path, "r", encoding="utf-8") as handle:
@@ -101,15 +91,6 @@ def load_configs(args):
             _load_yaml(args.train_config),
         )
     return _apply_runtime_overrides(configs, args)
-
-
-def _emit_metric(metric_id, value, *, step, chart=None):
-    if emit is None or EventType is None:
-        return
-    payload = {"id": metric_id, "value": round(float(value), 6), "epoch": int(step)}
-    if chart is not None:
-        payload["chart"] = chart
-    emit(EventType.METRIC, **payload)
 
 
 def _emit_checkpoint(path, *, step):
@@ -205,9 +186,6 @@ def _log_losses(logger, train_log_path, step, total_step, losses):
     with open(os.path.join(train_log_path, "log.txt"), "a", encoding="utf-8") as handle:
         handle.write(message1 + message2 + "\n")
     log(logger, step, losses=values)
-    _emit_metric("step", step, step=step)
-    for name, value in zip(_LOSS_METRICS, values):
-        _emit_metric(name, value, step=step, chart="Loss")
     return message1 + message2
 
 
@@ -274,7 +252,6 @@ def main(args, configs):
 
     try:
         while step <= total_step:
-            inner_bar = _progress_bar(total=len(loader), desc="Epoch {}".format(epoch), position=1)
             for batchs in loader:
                 for batch in batchs:
                     batch = to_device(batch, device)
@@ -340,9 +317,6 @@ def main(args, configs):
                         ) as handle:
                             handle.write(message + "\n")
                         outer_bar.write(message)
-                        if val_losses is not None:
-                            for name, value in zip(_LOSS_METRICS, val_losses):
-                                _emit_metric("val_" + name, value, step=step, chart="Validation")
                         model.train()
 
                     should_save = save_step > 0 and step % save_step == 0
@@ -378,7 +352,6 @@ def main(args, configs):
                     step += 1
                     outer_bar.update(1)
 
-                inner_bar.update(1)
             epoch += 1
     finally:
         train_logger.close()

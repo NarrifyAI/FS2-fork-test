@@ -189,6 +189,77 @@ def _log_losses(logger, train_log_path, step, total_step, losses):
     return message1 + message2
 
 
+_EARLY_STOP_METRICS = {
+    "val_total_loss": 0,
+    "val_mel_loss": 1,
+    "val_mel_postnet_loss": 2,
+    "val_pitch_loss": 3,
+    "val_energy_loss": 4,
+    "val_duration_loss": 5,
+}
+
+
+def _early_stop_state(train_config):
+    config = train_config.get("early_stop", {}) or {}
+    enabled = bool(config.get("enabled", False))
+    metric = str(config.get("metric", "val_total_loss"))
+    if metric not in _EARLY_STOP_METRICS:
+        supported = ", ".join(sorted(_EARLY_STOP_METRICS))
+        raise ValueError(
+            f"Unsupported FastSpeech2 early_stop.metric={metric!r}; "
+            f"supported values: {supported}"
+        )
+
+    patience = int(config.get("patience", 20))
+    if patience < 1:
+        raise ValueError("FastSpeech2 early_stop.patience must be >= 1")
+
+    min_delta = float(config.get("min_delta", 0.0))
+    if min_delta < 0:
+        raise ValueError("FastSpeech2 early_stop.min_delta must be >= 0")
+
+    return {
+        "enabled": enabled,
+        "metric": metric,
+        "min_step": max(0, int(config.get("min_step", 0))),
+        "patience": patience,
+        "min_delta": min_delta,
+        "best": None,
+        "best_step": None,
+        "bad_validations": 0,
+    }
+
+
+def _update_early_stop(state, step, val_losses):
+    if not state["enabled"] or val_losses is None or step < state["min_step"]:
+        return False, None
+
+    metric = state["metric"]
+    value = float(val_losses[_EARLY_STOP_METRICS[metric]])
+    best = state["best"]
+    if best is None or value < best - state["min_delta"]:
+        state["best"] = value
+        state["best_step"] = step
+        state["bad_validations"] = 0
+        return (
+            False,
+            f"Early Stop: {metric} improved to {value:.6f} at step {step}",
+        )
+
+    state["bad_validations"] += 1
+    message = (
+        f"Early Stop: {metric}={value:.6f} did not improve beyond "
+        f"{best:.6f} from step {state['best_step']} "
+        f"({state['bad_validations']}/{state['patience']})"
+    )
+    return state["bad_validations"] >= state["patience"], message
+
+
+def _write_training_message(train_log_path, message):
+    with open(os.path.join(train_log_path, "log.txt"), "a", encoding="utf-8") as handle:
+        handle.write(message + "\n")
+
+
 def main(args, configs):
     print("Prepare training ...")
 
@@ -245,6 +316,11 @@ def main(args, configs):
     save_step = int(train_config["step"].get("save_step", 0) or 0)
     synth_step = int(train_config["step"].get("synth_step", 0) or 0)
     val_step = int(train_config["step"].get("val_step", 0) or 0)
+    early_stop = _early_stop_state(train_config)
+    if early_stop["enabled"] and val_step <= 0:
+        raise ValueError(
+            "FastSpeech2 early_stop.enabled requires train.step.val_step > 0"
+        )
 
     outer_bar = _progress_bar(total=total_step, desc="Training", position=0)
     outer_bar.n = max(0, step - 1)
@@ -254,6 +330,7 @@ def main(args, configs):
         while step <= total_step:
             for batchs in loader:
                 for batch in batchs:
+                    early_stop_requested = False
                     batch = to_device(batch, device)
 
                     output = model(*(batch[2:]))
@@ -317,10 +394,18 @@ def main(args, configs):
                         ) as handle:
                             handle.write(message + "\n")
                         outer_bar.write(message)
+                        early_stop_requested, early_stop_message = _update_early_stop(
+                            early_stop,
+                            step,
+                            val_losses,
+                        )
+                        if early_stop_message:
+                            _write_training_message(train_log_path, early_stop_message)
+                            outer_bar.write(early_stop_message)
                         model.train()
 
                     should_save = save_step > 0 and step % save_step == 0
-                    final_step = step >= total_step
+                    final_step = step >= total_step or early_stop_requested
                     if should_save or final_step:
                         latest_path = os.path.join(
                             train_config["path"]["ckpt_path"], "latest.pt"

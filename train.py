@@ -2,6 +2,7 @@ import argparse
 import copy
 import os
 import re
+import time
 from pathlib import Path
 
 import torch
@@ -210,6 +211,112 @@ def _log_losses(logger, train_log_path, step, total_step, losses):
     return message
 
 
+def _profile_state(train_config, device, train_log_path):
+    config = train_config.get("profile", {}) or {}
+    enabled = bool(config.get("enabled", False))
+    return {
+        "enabled": enabled,
+        "interval": max(1, int(config.get("interval_step", 100) or 100)),
+        "sync_cuda": enabled
+        and device.type == "cuda"
+        and bool(config.get("cuda_sync", True)),
+        "log_path": os.path.join(train_log_path, "profile.txt"),
+        "stats": [],
+    }
+
+
+def _profile_sync(profile):
+    if profile["sync_cuda"]:
+        torch.cuda.synchronize()
+
+
+def _profile_now(profile):
+    _profile_sync(profile)
+    return time.perf_counter()
+
+
+def _profile_elapsed_ms(profile, started_at):
+    _profile_sync(profile)
+    return (time.perf_counter() - started_at) * 1000.0
+
+
+def _as_int(value):
+    if torch.is_tensor(value):
+        return int(value.item())
+    return int(value)
+
+
+def _profile_batch_stats(batch):
+    samples = len(batch[0])
+    mel_lens = batch[7]
+    max_mel_len = _as_int(batch[8])
+    if torch.is_tensor(mel_lens):
+        mel_frames = int(mel_lens.sum().item())
+    else:
+        mel_frames = int(sum(mel_lens))
+    padded_mel_frames = max(1, samples * max_mel_len)
+    padding_ratio = max(
+        0.0,
+        1.0 - (float(mel_frames) / float(padded_mel_frames)),
+    )
+    return {
+        "samples": samples,
+        "mel_frames": mel_frames,
+        "max_mel_len": max_mel_len,
+        "padding_ratio": padding_ratio,
+    }
+
+
+def _profile_log(profile, outer_bar, logger, step, message):
+    with open(profile["log_path"], "a", encoding="utf-8") as handle:
+        handle.write(message + "\n")
+    outer_bar.write(message)
+    if logger is not None:
+        logger.add_text("Profile/log", message, step)
+
+
+def _profile_record(profile, outer_bar, logger, step, sample):
+    if not profile["enabled"]:
+        return
+
+    profile["stats"].append(sample)
+    if step % profile["interval"] != 0:
+        return
+
+    stats = profile["stats"]
+    profile["stats"] = []
+    count = len(stats)
+    total_ms = sum(item["step_ms"] for item in stats)
+    total_seconds = max(total_ms / 1000.0, 1e-9)
+    samples = sum(item["samples"] for item in stats)
+    mel_frames = sum(item["mel_frames"] for item in stats)
+    message = (
+        "Perf Step {}, avg {} steps: step {:.1f}ms, data {:.1f}ms, "
+        "forward {:.1f}ms, backward {:.1f}ms, optimizer {:.1f}ms, "
+        "samples/s {:.1f}, mel_frames/s {:.0f}, padding {:.1f}%, max_mel {:.0f}"
+    ).format(
+        step,
+        count,
+        total_ms / count,
+        sum(item["data_ms"] for item in stats) / count,
+        sum(item["forward_ms"] for item in stats) / count,
+        sum(item["backward_ms"] for item in stats) / count,
+        sum(item["optimizer_ms"] for item in stats) / count,
+        samples / total_seconds,
+        mel_frames / total_seconds,
+        100.0 * sum(item["padding_ratio"] for item in stats) / count,
+        sum(item["max_mel_len"] for item in stats) / count,
+    )
+    _profile_log(profile, outer_bar, logger, step, message)
+
+
+def _profile_event(profile, outer_bar, logger, step, label, elapsed_ms):
+    if not profile["enabled"]:
+        return
+    message = "Perf {} Step {}, elapsed {:.1f}ms".format(label, step, elapsed_ms)
+    _profile_log(profile, outer_bar, logger, step, message)
+
+
 _EARLY_STOP_METRICS = {
     "val_total_loss": 0,
     "val_mel_loss": 1,
@@ -361,6 +468,7 @@ def main(args, configs):
     amp = resolve_amp_config(train_config, device)
     scaler = make_grad_scaler(amp)
     gpu_prefetch = resolve_gpu_prefetch(train_config, device)
+    profile = _profile_state(train_config, device, train_log_path)
     if amp["enabled"]:
         print(
             "FastSpeech2 AMP enabled: "
@@ -370,6 +478,12 @@ def main(args, configs):
         print("FastSpeech2 AMP requested but CUDA is unavailable; using float32.")
     if gpu_prefetch:
         print("FastSpeech2 GPU prefetch enabled.")
+    if profile["enabled"]:
+        sync_label = "with CUDA sync" if profile["sync_cuda"] else "without CUDA sync"
+        print(
+            "FastSpeech2 profiling enabled: "
+            f"interval={profile['interval']} steps, {sync_label}."
+        )
     early_stop = _early_stop_state(train_config)
     if early_stop["enabled"] and val_step <= 0:
         raise ValueError(
@@ -382,19 +496,34 @@ def main(args, configs):
 
     try:
         while step <= total_step:
-            for batch in iter_device_batches(loader, device, prefetch=gpu_prefetch):
+            batch_iter = iter_device_batches(loader, device, prefetch=gpu_prefetch)
+            while step <= total_step:
+                data_started_at = _profile_now(profile)
+                try:
+                    batch = next(batch_iter)
+                except StopIteration:
+                    break
+                data_ms = _profile_elapsed_ms(profile, data_started_at)
                 early_stop_requested = False
+                batch_stats = _profile_batch_stats(batch) if profile["enabled"] else {}
 
+                forward_started_at = _profile_now(profile)
                 with amp_autocast(amp):
                     output = model(*(batch[2:]))
                     losses = loss_fn(batch, output)
                     total_loss = losses[0] / grad_acc_step
+                forward_ms = _profile_elapsed_ms(profile, forward_started_at)
 
+                backward_started_at = _profile_now(profile)
                 if scaler is not None:
                     scaler.scale(total_loss).backward()
                 else:
                     total_loss.backward()
+                backward_ms = _profile_elapsed_ms(profile, backward_started_at)
+
+                optimizer_ms = 0.0
                 if step % grad_acc_step == 0:
+                    optimizer_started_at = _profile_now(profile)
                     if scaler is not None:
                         scaler.unscale_(optimizer._optimizer)
                     nn.utils.clip_grad_norm_(model.parameters(), grad_clip_thresh)
@@ -405,6 +534,20 @@ def main(args, configs):
                     else:
                         optimizer.step_and_update_lr()
                     optimizer.zero_grad()
+                    optimizer_ms = _profile_elapsed_ms(profile, optimizer_started_at)
+
+                step_ms = _profile_elapsed_ms(profile, data_started_at)
+                if profile["enabled"]:
+                    batch_stats.update(
+                        {
+                            "data_ms": data_ms,
+                            "forward_ms": forward_ms,
+                            "backward_ms": backward_ms,
+                            "optimizer_ms": optimizer_ms,
+                            "step_ms": step_ms,
+                        }
+                    )
+                    _profile_record(profile, outer_bar, train_logger, step, batch_stats)
 
                 if log_step > 0 and step % log_step == 0:
                     outer_bar.write(
@@ -448,6 +591,7 @@ def main(args, configs):
 
                 if val_step > 0 and step % val_step == 0:
                     model.eval()
+                    validation_started_at = _profile_now(profile)
                     message, val_losses = evaluate(
                         model,
                         step,
@@ -456,6 +600,10 @@ def main(args, configs):
                         vocoder,
                         return_losses=True,
                     )
+                    validation_ms = _profile_elapsed_ms(
+                        profile,
+                        validation_started_at,
+                    )
                     with open(
                         os.path.join(val_log_path, "log.txt"),
                         "a",
@@ -463,6 +611,14 @@ def main(args, configs):
                     ) as handle:
                         handle.write(message + "\n")
                     outer_bar.write(message)
+                    _profile_event(
+                        profile,
+                        outer_bar,
+                        train_logger,
+                        step,
+                        "Validation",
+                        validation_ms,
+                    )
                     early_stop_requested, early_stop_message = _update_early_stop(
                         early_stop,
                         step,
@@ -476,6 +632,7 @@ def main(args, configs):
                 should_save = save_step > 0 and step % save_step == 0
                 final_step = step >= total_step or early_stop_requested
                 if should_save or final_step:
+                    checkpoint_started_at = _profile_now(profile)
                     latest_path = os.path.join(
                         train_config["path"]["ckpt_path"], "latest.pt"
                     )
@@ -500,6 +657,15 @@ def main(args, configs):
                             step=step,
                             epoch=epoch,
                         )
+                    checkpoint_ms = _profile_elapsed_ms(profile, checkpoint_started_at)
+                    _profile_event(
+                        profile,
+                        outer_bar,
+                        train_logger,
+                        step,
+                        "Checkpoint",
+                        checkpoint_ms,
+                    )
 
                 if final_step:
                     return

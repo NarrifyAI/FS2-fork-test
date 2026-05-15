@@ -82,13 +82,12 @@ def evaluate(model, step, configs, logger=None, vocoder=None, return_losses=Fals
 
     message = (
         "Validation Step {}, Total Loss: {:.4f}, Mel Loss: {:.4f}, "
-        "Mel PostNet Loss: {:.4f}, Duration Loss: {:.4f}"
+        "Mel PostNet Loss: {:.4f}"
     ).format(
         step,
         loss_means[0],
         loss_means[1],
         loss_means[2],
-        loss_means[5],
     )
 
     if logger is not None:

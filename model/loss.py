@@ -18,6 +18,8 @@ class FastSpeech2Loss(nn.Module):
         self.train_variance_predictors = prosody_config.get(
             "train_variance_predictors", not self.external_frame_prosody
         )
+        duration_config = model_config.get("duration_conditioning", {})
+        self.external_duration = duration_config.get("mode", "internal") == "external"
         self.mse_loss = nn.MSELoss()
         self.mae_loss = nn.L1Loss()
 
@@ -40,11 +42,14 @@ class FastSpeech2Loss(nn.Module):
         ) = predictions
         src_masks = ~src_masks
         mel_masks = ~mel_masks
-        log_duration_targets = torch.log(duration_targets.float() + 1)
+        log_duration_targets = None
+        if not self.external_duration:
+            log_duration_targets = torch.log(duration_targets.float() + 1)
         mel_targets = mel_targets[:, : mel_masks.shape[1], :]
         mel_masks = mel_masks[:, :mel_masks.shape[1]]
 
-        log_duration_targets.requires_grad = False
+        if log_duration_targets is not None:
+            log_duration_targets.requires_grad = False
         pitch_targets.requires_grad = False
         energy_targets.requires_grad = False
         mel_targets.requires_grad = False
@@ -75,8 +80,9 @@ class FastSpeech2Loss(nn.Module):
             energy_predictions = energy_predictions.masked_select(mel_masks)
             energy_targets = energy_targets.masked_select(mel_masks)
 
-        log_duration_predictions = log_duration_predictions.masked_select(src_masks)
-        log_duration_targets = log_duration_targets.masked_select(src_masks)
+        if log_duration_predictions is not None and log_duration_targets is not None:
+            log_duration_predictions = log_duration_predictions.masked_select(src_masks)
+            log_duration_targets = log_duration_targets.masked_select(src_masks)
 
         mel_predictions = mel_predictions.masked_select(mel_masks.unsqueeze(-1))
         postnet_mel_predictions = postnet_mel_predictions.masked_select(
@@ -96,7 +102,11 @@ class FastSpeech2Loss(nn.Module):
             energy_loss = self.mse_loss(energy_predictions, energy_targets)
         else:
             energy_loss = zero_loss
-        if self.train_variance_predictors:
+        if (
+            self.train_variance_predictors
+            and not self.external_duration
+            and log_duration_predictions is not None
+        ):
             duration_loss = self.mse_loss(
                 log_duration_predictions, log_duration_targets
             )

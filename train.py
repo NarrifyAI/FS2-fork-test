@@ -196,14 +196,13 @@ def _log_losses(logger, train_log_path, step, total_step, losses):
     values = [loss.item() for loss in losses]
     message = (
         "Step {}/{}, Total Loss: {:.4f}, Mel Loss: {:.4f}, "
-        "Mel PostNet Loss: {:.4f}, Duration Loss: {:.4f}"
+        "Mel PostNet Loss: {:.4f}"
     ).format(
         step,
         total_step,
         values[0],
         values[1],
         values[2],
-        values[5],
     )
     with open(os.path.join(train_log_path, "log.txt"), "a", encoding="utf-8") as handle:
         handle.write(message + "\n")
@@ -323,7 +322,6 @@ _EARLY_STOP_METRICS = {
     "val_mel_postnet_loss": 2,
     "val_pitch_loss": 3,
     "val_energy_loss": 4,
-    "val_duration_loss": 5,
 }
 
 

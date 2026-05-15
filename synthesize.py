@@ -209,9 +209,12 @@ if __name__ == "__main__":
     os.makedirs(train_config["path"]["result_path"], exist_ok=True)
 
     # Preprocess texts
+    prosody_mode = model_config.get("prosody_conditioning", {}).get("mode", "none")
+    duration_mode = model_config.get("duration_conditioning", {}).get(
+        "mode", "internal"
+    )
     if args.mode == "batch":
         # Get dataset
-        prosody_mode = model_config.get("prosody_conditioning", {}).get("mode", "none")
         if prosody_mode == "external_frame":
             source_name = args.source
             preprocessed_path = preprocess_config["path"]["preprocessed_path"]
@@ -228,6 +231,11 @@ if __name__ == "__main__":
             collate_fn=dataset.collate_fn,
         )
     if args.mode == "single":
+        if prosody_mode == "external_frame" or duration_mode == "external":
+            raise ValueError(
+                "single synthesis is not supported with external duration/prosody "
+                "conditioning; use batch mode with exported features"
+            )
         ids = raw_texts = [args.text[:100]]
         speakers = np.array([args.speaker_id])
         if preprocess_config["preprocessing"]["text"]["language"] == "en":

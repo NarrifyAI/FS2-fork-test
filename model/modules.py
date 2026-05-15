@@ -23,6 +23,16 @@ class VarianceAdaptor(nn.Module):
         self.length_regulator = LengthRegulator()
         self.pitch_predictor = VariancePredictor(model_config)
         self.energy_predictor = VariancePredictor(model_config)
+        duration_config = model_config.get("duration_conditioning", {})
+        self.duration_mode = duration_config.get("mode", "internal")
+        if self.duration_mode not in {"internal", "external"}:
+            raise ValueError(
+                "duration_conditioning.mode must be 'internal' or 'external'"
+            )
+        self.use_external_duration = self.duration_mode == "external"
+        if self.use_external_duration:
+            self.duration_predictor.requires_grad_(False)
+
         prosody_config = model_config.get("prosody_conditioning", {})
         self.prosody_mode = prosody_config.get("mode", "none")
         self.use_external_frame_prosody = self.prosody_mode == "external_frame"
@@ -148,7 +158,15 @@ class VarianceAdaptor(nn.Module):
 
         pitch_prediction = None
         energy_prediction = None
-        log_duration_prediction = self.duration_predictor(x, src_mask)
+        if self.use_external_duration:
+            if duration_target is None:
+                raise ValueError(
+                    "duration_conditioning.mode=external requires duration_target"
+                )
+            log_duration_prediction = None
+        else:
+            log_duration_prediction = self.duration_predictor(x, src_mask)
+
         if (
             not self.use_external_frame_prosody
             and self.pitch_feature_level == "phoneme_level"

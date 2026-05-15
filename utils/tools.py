@@ -203,7 +203,6 @@ def log(
         logger.add_scalar("Loss/total_loss", losses[0], step)
         logger.add_scalar("Loss/mel_loss", losses[1], step)
         logger.add_scalar("Loss/mel_postnet_loss", losses[2], step)
-        logger.add_scalar("Loss/duration_loss", losses[5], step)
 
     if fig is not None:
         logger.add_figure(tag, fig)

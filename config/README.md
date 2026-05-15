@@ -26,6 +26,7 @@ Some important hyper-parameters are explained here.
 ## model.yaml
 - **transformer.decoder_layer**: the original paper used a 4-layer decoder, but we find it better to use a 6-layer decoder, especially for multi-speaker TTS.
 - **variance_embedding.pitch_quantization**: when the pitch values are normalized as specified in ``preprocess.yaml``, it is not valid to use log-scale quantization bins as proposed in the original paper, so we use linear-scaled bins instead. 
-- **prosody_conditioning.mode**: set to ``external_frame`` to inject continuous frame-level prosody features after the length regulator and before the decoder. In this mode, ``train_variance_predictors`` can be disabled so the renderer learns from oracle frame prosody rather than optimizing internal duration/pitch/energy predictors.
+- **prosody_conditioning.mode**: set to ``external_frame`` to inject continuous frame-level prosody features after the length regulator and before the decoder. In this mode, ``train_variance_predictors`` can be disabled so the renderer learns from external frame prosody rather than optimizing internal pitch/energy predictors.
+- **duration_conditioning.mode**: set to ``external`` when phoneme durations come from another model. FastSpeech2 then uses the supplied duration targets for length regulation and does not optimize its internal duration predictor.
 - **multi_speaker**: to apply a speaker embedding table to enable multi-speaker TTS or not.
 - **vocoder.speaker**: should be set to 'universal' if any dataset other than LJSpeech is used.

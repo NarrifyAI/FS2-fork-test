@@ -28,7 +28,10 @@ variance_embedding:
 #   n_style_token: 10
 #   attn_head: 4
 
-multi_speaker: True
+speaker_conditioning:
+  mode: "external_embedding"
+  input_dim: 192
+  projection: "linear"
 
 max_seq_len: 1000
 

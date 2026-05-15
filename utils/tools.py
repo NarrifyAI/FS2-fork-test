@@ -158,7 +158,7 @@ def to_device(data, device):
             durations,
         ) = data[:12]
 
-        speakers = _to_tensor(speakers, device, torch.long)
+        speakers = _to_tensor(speakers, device, torch.float32)
         texts = _to_tensor(texts, device, torch.long)
         src_lens = _to_tensor(src_lens, device)
         mels = _to_tensor(mels, device, torch.float32)
@@ -189,7 +189,7 @@ def to_device(data, device):
     if len(data) == 6:
         (ids, raw_texts, speakers, texts, src_lens, max_src_len) = data
 
-        speakers = _to_tensor(speakers, device, torch.long)
+        speakers = _to_tensor(speakers, device, torch.float32)
         texts = _to_tensor(texts, device, torch.long)
         src_lens = _to_tensor(src_lens, device)
 

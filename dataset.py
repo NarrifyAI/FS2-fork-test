@@ -1,5 +1,3 @@
-import json
-import math
 import os
 
 import numpy as np
@@ -8,6 +6,8 @@ from torch.utils.data import Dataset
 
 from text import load_phoneme_inventory, text_to_sequence
 from utils.tools import pad_1D, pad_2D
+
+SPEAKER_EMBEDDING_DIM = 192
 
 
 class Dataset(Dataset):
@@ -35,8 +35,6 @@ class Dataset(Dataset):
         self.phoneme_inventory = load_phoneme_inventory(
             os.path.join(self.preprocessed_path, "phoneme_inventory.json")
         )
-        with open(os.path.join(self.preprocessed_path, "speakers.json")) as f:
-            self.speaker_map = json.load(f)
         self.sort = sort
         self.drop_last = drop_last
 
@@ -46,7 +44,7 @@ class Dataset(Dataset):
     def __getitem__(self, idx):
         basename = self.basename[idx]
         speaker = self.speaker[idx]
-        speaker_id = self.speaker_map[speaker]
+        speaker_emb = self.load_speaker_embedding(speaker, basename)
         raw_text = self.raw_text[idx]
         phone = np.array(
             text_to_sequence(self.text[idx], self.cleaners, self.phoneme_inventory)
@@ -99,7 +97,7 @@ class Dataset(Dataset):
 
         sample = {
             "id": basename,
-            "speaker": speaker_id,
+            "speaker": speaker_emb,
             "text": phone,
             "raw_text": raw_text,
             "mel": mel,
@@ -111,6 +109,24 @@ class Dataset(Dataset):
             sample["prosody"] = prosody
 
         return sample
+
+    def load_speaker_embedding(self, speaker, basename):
+        path = os.path.join(
+            self.preprocessed_path,
+            "speaker_emb",
+            "{}-speaker_emb-{}.npy".format(speaker, basename),
+        )
+        arr = np.load(path).astype(np.float32, copy=False)
+        if arr.ndim != 1:
+            raise ValueError(
+                f"Speaker embedding for {speaker}/{basename} must be 1-D, got {arr.shape}"
+            )
+        if arr.shape[0] != SPEAKER_EMBEDDING_DIM:
+            raise ValueError(
+                f"Speaker embedding for {speaker}/{basename} has dimension {arr.shape[0]}, "
+                f"expected {SPEAKER_EMBEDDING_DIM}"
+            )
+        return np.ascontiguousarray(arr, dtype=np.float32)
 
     def build_frame_prosody(self, pitch, energy):
         values = []
@@ -162,7 +178,7 @@ class Dataset(Dataset):
         text_lens = np.array([text.shape[0] for text in texts])
         mel_lens = np.array([mel.shape[0] for mel in mels])
 
-        speakers = np.array(speakers)
+        speakers = np.stack(speakers, axis=0).astype(np.float32, copy=False)
         texts = pad_1D(texts)
         mels = pad_2D(mels)
         pitches = pad_1D(pitches)
@@ -227,12 +243,6 @@ class TextDataset(Dataset):
         self.phoneme_inventory = load_phoneme_inventory(
             os.path.join(self.preprocessed_path, "phoneme_inventory.json")
         )
-        with open(
-            os.path.join(
-                self.preprocessed_path, "speakers.json"
-            )
-        ) as f:
-            self.speaker_map = json.load(f)
 
     def __len__(self):
         return len(self.text)
@@ -240,13 +250,31 @@ class TextDataset(Dataset):
     def __getitem__(self, idx):
         basename = self.basename[idx]
         speaker = self.speaker[idx]
-        speaker_id = self.speaker_map[speaker]
+        speaker_emb = self.load_speaker_embedding(speaker, basename)
         raw_text = self.raw_text[idx]
         phone = np.array(
             text_to_sequence(self.text[idx], self.cleaners, self.phoneme_inventory)
         )
 
-        return (basename, speaker_id, phone, raw_text)
+        return (basename, speaker_emb, phone, raw_text)
+
+    def load_speaker_embedding(self, speaker, basename):
+        path = os.path.join(
+            self.preprocessed_path,
+            "speaker_emb",
+            "{}-speaker_emb-{}.npy".format(speaker, basename),
+        )
+        arr = np.load(path).astype(np.float32, copy=False)
+        if arr.ndim != 1:
+            raise ValueError(
+                f"Speaker embedding for {speaker}/{basename} must be 1-D, got {arr.shape}"
+            )
+        if arr.shape[0] != SPEAKER_EMBEDDING_DIM:
+            raise ValueError(
+                f"Speaker embedding for {speaker}/{basename} has dimension {arr.shape[0]}, "
+                f"expected {SPEAKER_EMBEDDING_DIM}"
+            )
+        return np.ascontiguousarray(arr, dtype=np.float32)
 
     def process_meta(self, filename):
         with open(filename, "r", encoding="utf-8") as f:
@@ -264,7 +292,7 @@ class TextDataset(Dataset):
 
     def collate_fn(self, data):
         ids = [d[0] for d in data]
-        speakers = np.array([d[1] for d in data])
+        speakers = np.stack([d[1] for d in data], axis=0).astype(np.float32, copy=False)
         texts = [d[2] for d in data]
         raw_texts = [d[3] for d in data]
         text_lens = np.array([text.shape[0] for text in texts])

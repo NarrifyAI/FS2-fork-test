@@ -28,5 +28,5 @@ Some important hyper-parameters are explained here.
 - **variance_embedding.pitch_quantization**: when the pitch values are normalized as specified in ``preprocess.yaml``, it is not valid to use log-scale quantization bins as proposed in the original paper, so we use linear-scaled bins instead. 
 - **prosody_conditioning.mode**: set to ``external_frame`` to inject continuous frame-level prosody features after the length regulator and before the decoder. In this mode, ``train_variance_predictors`` can be disabled so the renderer learns from external frame prosody rather than optimizing internal pitch/energy predictors.
 - **duration_conditioning.mode**: set to ``external`` when phoneme durations come from another model. FastSpeech2 then uses the supplied duration targets for length regulation and does not optimize its internal duration predictor.
-- **multi_speaker**: to apply a speaker embedding table to enable multi-speaker TTS or not.
+- **speaker_conditioning**: Forge uses ``mode: external_embedding`` with ``input_dim: 192`` and ``projection: linear``. The batch item formerly used for speaker IDs now carries a float32 speaker embedding loaded from ``speaker_emb/*.npy``. The legacy ``multi_speaker`` speaker-ID table is not supported by this fork.
 - **vocoder.speaker**: should be set to 'universal' if any dataset other than LJSpeech is used.

@@ -37,6 +37,7 @@ except ImportError:  # pragma: no cover - optional Forge integration
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+CHECKPOINT_FORMAT = "forge_fastspeech2_v2"
 
 def _load_yaml(path):
     with open(path, "r", encoding="utf-8") as handle:
@@ -141,6 +142,22 @@ def _load_model_state(model, checkpoint):
             raise
 
 
+def _validate_checkpoint_format(checkpoint):
+    if not isinstance(checkpoint, dict):
+        raise ValueError(
+            "FastSpeech2 checkpoint is incompatible with external speaker embedding "
+            f"conditioning: expected {CHECKPOINT_FORMAT!r} metadata."
+        )
+    checkpoint_format = checkpoint.get("checkpoint_format")
+    if checkpoint_format != CHECKPOINT_FORMAT:
+        raise ValueError(
+            "FastSpeech2 checkpoint is incompatible with external speaker embedding "
+            f"conditioning: checkpoint_format={checkpoint_format!r}, "
+            f"expected {CHECKPOINT_FORMAT!r}. Re-export the FastSpeech2 bundle and "
+            "train a new v2 checkpoint."
+        )
+
+
 def _parse_step_from_name(path):
     match = re.search(r"(\d+)\.pth\.tar$", Path(path).name)
     return int(match.group(1)) if match else 0
@@ -160,6 +177,7 @@ def _find_latest_checkpoint(checkpoint_dir):
 
 def _load_training_checkpoint(path, model, optimizer):
     checkpoint = _torch_load(path)
+    _validate_checkpoint_format(checkpoint)
     _load_model_state(model, checkpoint)
     if "optimizer" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -172,6 +190,7 @@ def _load_training_checkpoint(path, model, optimizer):
 
 def _load_finetune_checkpoint(path, model):
     checkpoint = _torch_load(path)
+    _validate_checkpoint_format(checkpoint)
     _load_model_state(model, checkpoint)
     print(f"Loaded FastSpeech2 fine-tune checkpoint {path}")
 
@@ -185,7 +204,7 @@ def _save_checkpoint(path, *, model, optimizer, configs, step, epoch):
             "step": int(step),
             "epoch": int(epoch),
             "configs": configs,
-            "checkpoint_format": "forge_fastspeech2_v1",
+            "checkpoint_format": CHECKPOINT_FORMAT,
         },
         path,
     )

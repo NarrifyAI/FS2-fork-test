@@ -32,20 +32,24 @@ You have to download the [pretrained models](https://drive.google.com/drive/fold
 
 For English single-speaker TTS, run
 ```
-python3 synthesize.py --text "YOUR_DESIRED_TEXT" --restore_step 900000 --mode single -p config/LJSpeech/preprocess.yaml -m config/LJSpeech/model.yaml -t config/LJSpeech/train.yaml
+python3 synthesize.py --text "YOUR_DESIRED_TEXT" --speaker_emb /path/to/speaker_emb.npy --restore_step 900000 --mode single -p config/LJSpeech/preprocess.yaml -m config/LJSpeech/model.yaml -t config/LJSpeech/train.yaml
 ```
 
 For Mandarin multi-speaker TTS, try
 ```
-python3 synthesize.py --text "大家好" --speaker_id SPEAKER_ID --restore_step 600000 --mode single -p config/AISHELL3/preprocess.yaml -m config/AISHELL3/model.yaml -t config/AISHELL3/train.yaml
+python3 synthesize.py --text "大家好" --speaker_emb /path/to/speaker_emb.npy --restore_step 600000 --mode single -p config/AISHELL3/preprocess.yaml -m config/AISHELL3/model.yaml -t config/AISHELL3/train.yaml
 ```
 
 For English multi-speaker TTS, run
 ```
-python3 synthesize.py --text "YOUR_DESIRED_TEXT"  --speaker_id SPEAKER_ID --restore_step 800000 --mode single -p config/LibriTTS/preprocess.yaml -m config/LibriTTS/model.yaml -t config/LibriTTS/train.yaml
+python3 synthesize.py --text "YOUR_DESIRED_TEXT" --speaker_emb /path/to/speaker_emb.npy --restore_step 800000 --mode single -p config/LibriTTS/preprocess.yaml -m config/LibriTTS/model.yaml -t config/LibriTTS/train.yaml
 ```
 
 The generated utterances will be put in ``output/result/``.
+
+Forge-specific note: this fork expects external 192-D speaker embeddings in
+``speaker_emb/*.npy`` and v2 checkpoints tagged ``forge_fastspeech2_v2``. The
+legacy ``speakers.json`` ID lookup is not used for model conditioning.
 
 Here is an example of synthesized mel-spectrogram of the sentence "Printing, in the only sense with which we are at present concerned, differs from most if not from all the arts and crafts represented in the Exhibition", with the English single-speaker TTS model.  
 ![](./img/synthesized_melspectrogram.png)

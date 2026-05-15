@@ -7,12 +7,30 @@ import numpy as np
 import hifigan
 from model import FastSpeech2, ScheduledOptim
 
+CHECKPOINT_FORMAT = "forge_fastspeech2_v2"
+
 
 def _torch_load(path, device):
     try:
         return torch.load(path, map_location=device, weights_only=False)
     except TypeError:
         return torch.load(path, map_location=device)
+
+
+def _validate_checkpoint_format(checkpoint):
+    if not isinstance(checkpoint, dict):
+        raise ValueError(
+            "FastSpeech2 checkpoint is incompatible with external speaker embedding "
+            f"conditioning: expected {CHECKPOINT_FORMAT!r} metadata."
+        )
+    checkpoint_format = checkpoint.get("checkpoint_format")
+    if checkpoint_format != CHECKPOINT_FORMAT:
+        raise ValueError(
+            "FastSpeech2 checkpoint is incompatible with external speaker embedding "
+            f"conditioning: checkpoint_format={checkpoint_format!r}, "
+            f"expected {CHECKPOINT_FORMAT!r}. Re-export the FastSpeech2 bundle and "
+            "train a new v2 checkpoint."
+        )
 
 
 def get_model(args, configs, device, train=False):
@@ -25,6 +43,7 @@ def get_model(args, configs, device, train=False):
             "{}.pth.tar".format(args.restore_step),
         )
         ckpt = _torch_load(ckpt_path, device)
+        _validate_checkpoint_format(ckpt)
         state = ckpt["model"]
         try:
             model.load_state_dict(state)

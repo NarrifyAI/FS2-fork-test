@@ -41,23 +41,32 @@ class FastSpeech2(nn.Module):
         )
         self.postnet = PostNet()
 
-        self.speaker_emb = None
-        if model_config["multi_speaker"]:
-            with open(
-                os.path.join(
-                    preprocess_config["path"]["preprocessed_path"], "speakers.json"
-                ),
-                "r",
-            ) as f:
-                n_speaker = len(json.load(f))
-            self.speaker_emb = nn.Embedding(
-                n_speaker,
-                model_config["transformer"]["encoder_hidden"],
+        if "multi_speaker" in model_config:
+            raise ValueError(
+                "model.multi_speaker speaker-ID conditioning is no longer supported; "
+                "use model.speaker_conditioning.mode=external_embedding"
             )
+        speaker_config = model_config.get("speaker_conditioning")
+        if not isinstance(speaker_config, dict):
+            raise ValueError("model.speaker_conditioning is required")
+        if speaker_config.get("mode") != "external_embedding":
+            raise ValueError(
+                "model.speaker_conditioning.mode must be external_embedding"
+            )
+        if speaker_config.get("projection") != "linear":
+            raise ValueError("model.speaker_conditioning.projection must be linear")
+        speaker_input_dim = int(speaker_config.get("input_dim", 0) or 0)
+        if speaker_input_dim <= 0:
+            raise ValueError("model.speaker_conditioning.input_dim must be positive")
+        self.speaker_input_dim = speaker_input_dim
+        self.speaker_emb = nn.Linear(
+            speaker_input_dim,
+            model_config["transformer"]["encoder_hidden"],
+        )
 
     def forward(
         self,
-        speakers,
+        speaker_embeddings,
         texts,
         src_lens,
         max_src_len,
@@ -81,10 +90,17 @@ class FastSpeech2(nn.Module):
 
         output = self.encoder(texts, src_masks)
 
-        if self.speaker_emb is not None:
-            output = output + self.speaker_emb(speakers).unsqueeze(1).expand(
-                -1, max_src_len, -1
+        if speaker_embeddings is None:
+            raise ValueError("speaker_embeddings are required")
+        if speaker_embeddings.dim() != 2:
+            raise ValueError("speaker_embeddings must have shape [batch, dim]")
+        if speaker_embeddings.size(1) != self.speaker_input_dim:
+            raise ValueError(
+                "speaker_embeddings dimension "
+                f"{speaker_embeddings.size(1)} does not match {self.speaker_input_dim}"
             )
+        speaker_conditioning = self.speaker_emb(speaker_embeddings)
+        output = output + speaker_conditioning.unsqueeze(1).expand(-1, max_src_len, -1)
 
         (
             output,

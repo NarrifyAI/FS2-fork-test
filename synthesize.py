@@ -149,10 +149,10 @@ if __name__ == "__main__":
         help="raw text to synthesize, for single-sentence mode only",
     )
     parser.add_argument(
-        "--speaker_id",
-        type=int,
-        default=0,
-        help="speaker ID for multi-speaker synthesis, for single-sentence mode only",
+        "--speaker_emb",
+        type=str,
+        default=None,
+        help="path to a 192-D speaker embedding .npy for single-sentence mode only",
     )
     parser.add_argument(
         "-p",
@@ -236,8 +236,15 @@ if __name__ == "__main__":
                 "single synthesis is not supported with external duration/prosody "
                 "conditioning; use batch mode with exported features"
             )
+        if args.speaker_emb is None:
+            raise ValueError("--speaker_emb is required for single-sentence synthesis")
         ids = raw_texts = [args.text[:100]]
-        speakers = np.array([args.speaker_id])
+        speaker_emb = np.load(args.speaker_emb).astype(np.float32, copy=False)
+        if speaker_emb.ndim != 1 or speaker_emb.shape[0] != 192:
+            raise ValueError(
+                f"--speaker_emb must be a 1-D 192-value .npy, got {speaker_emb.shape}"
+            )
+        speakers = speaker_emb.reshape(1, -1)
         if preprocess_config["preprocessing"]["text"]["language"] == "en":
             texts = np.array([preprocess_english(args.text, preprocess_config)])
         elif preprocess_config["preprocessing"]["text"]["language"] == "zh":

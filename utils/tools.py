@@ -1,3 +1,4 @@
+import contextlib
 import os
 import json
 
@@ -13,6 +14,58 @@ matplotlib.use("Agg")
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def resolve_amp_config(train_config, device):
+    config = train_config.get("amp", {}) or {}
+    requested = bool(config.get("enabled", False))
+    dtype_name = str(config.get("dtype", "float16") or "float16").lower()
+    if dtype_name in {"float16", "fp16", "half"}:
+        dtype = torch.float16
+        normalized_dtype = "float16"
+    elif dtype_name in {"bfloat16", "bf16"}:
+        dtype = torch.bfloat16
+        normalized_dtype = "bfloat16"
+    else:
+        raise ValueError(
+            f"Unsupported FastSpeech2 AMP dtype: {dtype_name}. "
+            "Use float16 or bfloat16."
+        )
+
+    enabled = requested and device.type == "cuda"
+    return {
+        "requested": requested,
+        "enabled": enabled,
+        "dtype": dtype,
+        "dtype_name": normalized_dtype,
+        "use_grad_scaler": (
+            enabled
+            and dtype == torch.float16
+            and bool(config.get("grad_scaler", True))
+        ),
+    }
+
+
+def amp_autocast(amp):
+    if not amp["enabled"]:
+        return contextlib.nullcontext()
+    if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+        try:
+            return torch.amp.autocast(device_type="cuda", dtype=amp["dtype"])
+        except TypeError:
+            return torch.amp.autocast("cuda", dtype=amp["dtype"])
+    return torch.cuda.amp.autocast(dtype=amp["dtype"])
+
+
+def make_grad_scaler(amp):
+    if not amp["use_grad_scaler"]:
+        return None
+    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+        try:
+            return torch.amp.GradScaler("cuda", enabled=True)
+        except TypeError:
+            pass
+    return torch.cuda.amp.GradScaler(enabled=True)
 
 
 def _to_tensor(value, device, dtype=None):

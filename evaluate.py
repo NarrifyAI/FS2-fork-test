@@ -5,7 +5,13 @@ import yaml
 from torch.utils.data import DataLoader
 
 from utils.model import get_model, get_vocoder
-from utils.tools import to_device, log, synth_one_sample
+from utils.tools import (
+    amp_autocast,
+    log,
+    resolve_amp_config,
+    synth_one_sample,
+    to_device,
+)
 from model import FastSpeech2Loss
 from dataset import Dataset
 
@@ -53,6 +59,7 @@ def evaluate(model, step, configs, logger=None, vocoder=None, return_losses=Fals
     )
 
     loss_fn = FastSpeech2Loss(preprocess_config, model_config).to(device)
+    amp = resolve_amp_config(train_config, device)
 
     loss_sums = [0 for _ in range(6)]
     last_batch = None
@@ -61,8 +68,9 @@ def evaluate(model, step, configs, logger=None, vocoder=None, return_losses=Fals
         for batch in batchs:
             batch = to_device(batch, device)
             with torch.no_grad():
-                output = model(*(batch[2:]))
-                losses = loss_fn(batch, output)
+                with amp_autocast(amp):
+                    output = model(*(batch[2:]))
+                    losses = loss_fn(batch, output)
 
                 weight = len(batch[0])
                 for i in range(len(losses)):

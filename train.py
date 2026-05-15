@@ -14,7 +14,14 @@ from tqdm import tqdm
 _progress_bar = tqdm
 
 from utils.model import get_model, get_vocoder, get_param_num
-from utils.tools import to_device, log, synth_one_sample
+from utils.tools import (
+    amp_autocast,
+    log,
+    make_grad_scaler,
+    resolve_amp_config,
+    synth_one_sample,
+    to_device,
+)
 from model import FastSpeech2Loss
 from dataset import Dataset
 
@@ -342,6 +349,15 @@ def main(args, configs):
     save_step = int(train_config["step"].get("save_step", 0) or 0)
     synth_step = int(train_config["step"].get("synth_step", 0) or 0)
     val_step = int(train_config["step"].get("val_step", 0) or 0)
+    amp = resolve_amp_config(train_config, device)
+    scaler = make_grad_scaler(amp)
+    if amp["enabled"]:
+        print(
+            "FastSpeech2 AMP enabled: "
+            f"dtype={amp['dtype_name']}, grad_scaler={scaler is not None}"
+        )
+    elif amp["requested"]:
+        print("FastSpeech2 AMP requested but CUDA is unavailable; using float32.")
     early_stop = _early_stop_state(train_config)
     if early_stop["enabled"] and val_step <= 0:
         raise ValueError(
@@ -359,14 +375,25 @@ def main(args, configs):
                     early_stop_requested = False
                     batch = to_device(batch, device)
 
-                    output = model(*(batch[2:]))
-                    losses = loss_fn(batch, output)
-                    total_loss = losses[0] / grad_acc_step
+                    with amp_autocast(amp):
+                        output = model(*(batch[2:]))
+                        losses = loss_fn(batch, output)
+                        total_loss = losses[0] / grad_acc_step
 
-                    total_loss.backward()
+                    if scaler is not None:
+                        scaler.scale(total_loss).backward()
+                    else:
+                        total_loss.backward()
                     if step % grad_acc_step == 0:
+                        if scaler is not None:
+                            scaler.unscale_(optimizer._optimizer)
                         nn.utils.clip_grad_norm_(model.parameters(), grad_clip_thresh)
-                        optimizer.step_and_update_lr()
+                        if scaler is not None:
+                            optimizer.update_learning_rate()
+                            scaler.step(optimizer._optimizer)
+                            scaler.update()
+                        else:
+                            optimizer.step_and_update_lr()
                         optimizer.zero_grad()
 
                     if log_step > 0 and step % log_step == 0:

@@ -23,6 +23,9 @@ class ScheduledOptim:
         self._update_learning_rate()
         self._optimizer.step()
 
+    def update_learning_rate(self):
+        self._update_learning_rate()
+
     def zero_grad(self):
         # print(self.init_lr)
         self._optimizer.zero_grad()

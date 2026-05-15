@@ -193,14 +193,21 @@ def _save_checkpoint(path, *, model, optimizer, configs, step, epoch):
 
 def _log_losses(logger, train_log_path, step, total_step, losses):
     values = [loss.item() for loss in losses]
-    message1 = "Step {}/{}, ".format(step, total_step)
-    message2 = "Total Loss: {:.4f}, Mel Loss: {:.4f}, Mel PostNet Loss: {:.4f}, Pitch Loss: {:.4f}, Energy Loss: {:.4f}, Duration Loss: {:.4f}".format(
-        *values
+    message = (
+        "Step {}/{}, Total Loss: {:.4f}, Mel Loss: {:.4f}, "
+        "Mel PostNet Loss: {:.4f}, Duration Loss: {:.4f}"
+    ).format(
+        step,
+        total_step,
+        values[0],
+        values[1],
+        values[2],
+        values[5],
     )
     with open(os.path.join(train_log_path, "log.txt"), "a", encoding="utf-8") as handle:
-        handle.write(message1 + message2 + "\n")
+        handle.write(message + "\n")
     log(logger, step, losses=values)
-    return message1 + message2
+    return message
 
 
 _EARLY_STOP_METRICS = {
@@ -401,7 +408,13 @@ def main(args, configs):
 
                 if log_step > 0 and step % log_step == 0:
                     outer_bar.write(
-                        _log_losses(train_logger, train_log_path, step, total_step, losses)
+                        _log_losses(
+                            train_logger,
+                            train_log_path,
+                            step,
+                            total_step,
+                            losses,
+                        )
                     )
 
                 if synth_step > 0 and step % synth_step == 0:

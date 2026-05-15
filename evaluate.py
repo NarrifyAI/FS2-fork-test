@@ -7,10 +7,11 @@ from torch.utils.data import DataLoader
 from utils.model import get_model, get_vocoder
 from utils.tools import (
     amp_autocast,
+    iter_device_batches,
     log,
     resolve_amp_config,
+    resolve_gpu_prefetch,
     synth_one_sample,
-    to_device,
 )
 from model import FastSpeech2Loss
 from dataset import Dataset
@@ -60,23 +61,22 @@ def evaluate(model, step, configs, logger=None, vocoder=None, return_losses=Fals
 
     loss_fn = FastSpeech2Loss(preprocess_config, model_config).to(device)
     amp = resolve_amp_config(train_config, device)
+    gpu_prefetch = resolve_gpu_prefetch(train_config, device)
 
     loss_sums = [0 for _ in range(6)]
     last_batch = None
     last_output = None
-    for batchs in loader:
-        for batch in batchs:
-            batch = to_device(batch, device)
-            with torch.no_grad():
-                with amp_autocast(amp):
-                    output = model(*(batch[2:]))
-                    losses = loss_fn(batch, output)
+    for batch in iter_device_batches(loader, device, prefetch=gpu_prefetch):
+        with torch.no_grad():
+            with amp_autocast(amp):
+                output = model(*(batch[2:]))
+                losses = loss_fn(batch, output)
 
-                weight = len(batch[0])
-                for i in range(len(losses)):
-                    loss_sums[i] += losses[i].item() * weight
-            last_batch = batch
-            last_output = output
+            weight = len(batch[0])
+            for i in range(len(losses)):
+                loss_sums[i] += losses[i].item() * weight
+        last_batch = batch
+        last_output = output
 
     loss_means = [loss_sum / len(dataset) for loss_sum in loss_sums]
 

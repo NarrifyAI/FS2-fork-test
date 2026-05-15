@@ -16,11 +16,12 @@ _progress_bar = tqdm
 from utils.model import get_model, get_vocoder, get_param_num
 from utils.tools import (
     amp_autocast,
+    iter_device_batches,
     log,
     make_grad_scaler,
     resolve_amp_config,
+    resolve_gpu_prefetch,
     synth_one_sample,
-    to_device,
 )
 from model import FastSpeech2Loss
 from dataset import Dataset
@@ -302,7 +303,8 @@ def main(args, configs):
     if len(dataset) == 0:
         raise ValueError("FastSpeech2 train.txt contains no samples")
     batch_size = int(train_config["optimizer"]["batch_size"])
-    group_size = 4
+    data_config = train_config.get("data", {}) or {}
+    group_size = max(1, int(data_config.get("batch_group_size", 4) or 4))
     loader_batch_size = min(len(dataset), max(batch_size, batch_size * group_size))
     loader = DataLoader(
         dataset,
@@ -351,6 +353,7 @@ def main(args, configs):
     val_step = int(train_config["step"].get("val_step", 0) or 0)
     amp = resolve_amp_config(train_config, device)
     scaler = make_grad_scaler(amp)
+    gpu_prefetch = resolve_gpu_prefetch(train_config, device)
     if amp["enabled"]:
         print(
             "FastSpeech2 AMP enabled: "
@@ -358,6 +361,8 @@ def main(args, configs):
         )
     elif amp["requested"]:
         print("FastSpeech2 AMP requested but CUDA is unavailable; using float32.")
+    if gpu_prefetch:
+        print("FastSpeech2 GPU prefetch enabled.")
     early_stop = _early_stop_state(train_config)
     if early_stop["enabled"] and val_step <= 0:
         raise ValueError(
@@ -370,125 +375,123 @@ def main(args, configs):
 
     try:
         while step <= total_step:
-            for batchs in loader:
-                for batch in batchs:
-                    early_stop_requested = False
-                    batch = to_device(batch, device)
+            for batch in iter_device_batches(loader, device, prefetch=gpu_prefetch):
+                early_stop_requested = False
 
-                    with amp_autocast(amp):
-                        output = model(*(batch[2:]))
-                        losses = loss_fn(batch, output)
-                        total_loss = losses[0] / grad_acc_step
+                with amp_autocast(amp):
+                    output = model(*(batch[2:]))
+                    losses = loss_fn(batch, output)
+                    total_loss = losses[0] / grad_acc_step
 
+                if scaler is not None:
+                    scaler.scale(total_loss).backward()
+                else:
+                    total_loss.backward()
+                if step % grad_acc_step == 0:
                     if scaler is not None:
-                        scaler.scale(total_loss).backward()
+                        scaler.unscale_(optimizer._optimizer)
+                    nn.utils.clip_grad_norm_(model.parameters(), grad_clip_thresh)
+                    if scaler is not None:
+                        optimizer.update_learning_rate()
+                        scaler.step(optimizer._optimizer)
+                        scaler.update()
                     else:
-                        total_loss.backward()
-                    if step % grad_acc_step == 0:
-                        if scaler is not None:
-                            scaler.unscale_(optimizer._optimizer)
-                        nn.utils.clip_grad_norm_(model.parameters(), grad_clip_thresh)
-                        if scaler is not None:
-                            optimizer.update_learning_rate()
-                            scaler.step(optimizer._optimizer)
-                            scaler.update()
-                        else:
-                            optimizer.step_and_update_lr()
-                        optimizer.zero_grad()
+                        optimizer.step_and_update_lr()
+                    optimizer.zero_grad()
 
-                    if log_step > 0 and step % log_step == 0:
-                        outer_bar.write(
-                            _log_losses(train_logger, train_log_path, step, total_step, losses)
-                        )
+                if log_step > 0 and step % log_step == 0:
+                    outer_bar.write(
+                        _log_losses(train_logger, train_log_path, step, total_step, losses)
+                    )
 
-                    if synth_step > 0 and step % synth_step == 0:
-                        fig, wav_reconstruction, wav_prediction, tag = synth_one_sample(
-                            batch,
-                            output,
-                            vocoder,
-                            model_config,
-                            preprocess_config,
-                        )
-                        log(
-                            train_logger,
-                            fig=fig,
-                            tag="Training/step_{}_{}".format(step, tag),
-                        )
-                        sampling_rate = preprocess_config["preprocessing"]["audio"][
-                            "sampling_rate"
-                        ]
-                        log(
-                            train_logger,
-                            audio=wav_reconstruction,
-                            sampling_rate=sampling_rate,
-                            tag="Training/step_{}_{}_reconstructed".format(step, tag),
-                        )
-                        log(
-                            train_logger,
-                            audio=wav_prediction,
-                            sampling_rate=sampling_rate,
-                            tag="Training/step_{}_{}_synthesized".format(step, tag),
-                        )
+                if synth_step > 0 and step % synth_step == 0:
+                    fig, wav_reconstruction, wav_prediction, tag = synth_one_sample(
+                        batch,
+                        output,
+                        vocoder,
+                        model_config,
+                        preprocess_config,
+                    )
+                    log(
+                        train_logger,
+                        fig=fig,
+                        tag="Training/step_{}_{}".format(step, tag),
+                    )
+                    sampling_rate = preprocess_config["preprocessing"]["audio"][
+                        "sampling_rate"
+                    ]
+                    log(
+                        train_logger,
+                        audio=wav_reconstruction,
+                        sampling_rate=sampling_rate,
+                        tag="Training/step_{}_{}_reconstructed".format(step, tag),
+                    )
+                    log(
+                        train_logger,
+                        audio=wav_prediction,
+                        sampling_rate=sampling_rate,
+                        tag="Training/step_{}_{}_synthesized".format(step, tag),
+                    )
 
-                    if val_step > 0 and step % val_step == 0:
-                        model.eval()
-                        message, val_losses = evaluate(
-                            model,
-                            step,
-                            configs,
-                            val_logger,
-                            vocoder,
-                            return_losses=True,
-                        )
-                        with open(
-                            os.path.join(val_log_path, "log.txt"),
-                            "a",
-                            encoding="utf-8",
-                        ) as handle:
-                            handle.write(message + "\n")
-                        outer_bar.write(message)
-                        early_stop_requested, early_stop_message = _update_early_stop(
-                            early_stop,
-                            step,
-                            val_losses,
-                        )
-                        if early_stop_message:
-                            _write_training_message(train_log_path, early_stop_message)
-                            outer_bar.write(early_stop_message)
-                        model.train()
+                if val_step > 0 and step % val_step == 0:
+                    model.eval()
+                    message, val_losses = evaluate(
+                        model,
+                        step,
+                        configs,
+                        val_logger,
+                        vocoder,
+                        return_losses=True,
+                    )
+                    with open(
+                        os.path.join(val_log_path, "log.txt"),
+                        "a",
+                        encoding="utf-8",
+                    ) as handle:
+                        handle.write(message + "\n")
+                    outer_bar.write(message)
+                    early_stop_requested, early_stop_message = _update_early_stop(
+                        early_stop,
+                        step,
+                        val_losses,
+                    )
+                    if early_stop_message:
+                        _write_training_message(train_log_path, early_stop_message)
+                        outer_bar.write(early_stop_message)
+                    model.train()
 
-                    should_save = save_step > 0 and step % save_step == 0
-                    final_step = step >= total_step or early_stop_requested
-                    if should_save or final_step:
-                        latest_path = os.path.join(
-                            train_config["path"]["ckpt_path"], "latest.pt"
+                should_save = save_step > 0 and step % save_step == 0
+                final_step = step >= total_step or early_stop_requested
+                if should_save or final_step:
+                    latest_path = os.path.join(
+                        train_config["path"]["ckpt_path"], "latest.pt"
+                    )
+                    _save_checkpoint(
+                        latest_path,
+                        model=model,
+                        optimizer=optimizer,
+                        configs=configs,
+                        step=step,
+                        epoch=epoch,
+                    )
+                    if should_save:
+                        candidate_path = os.path.join(
+                            train_config["path"]["ckpt_path"],
+                            "{}.pth.tar".format(step),
                         )
                         _save_checkpoint(
-                            latest_path,
+                            candidate_path,
                             model=model,
                             optimizer=optimizer,
                             configs=configs,
                             step=step,
                             epoch=epoch,
                         )
-                        if should_save:
-                            candidate_path = os.path.join(
-                                train_config["path"]["ckpt_path"],
-                                "{}.pth.tar".format(step),
-                            )
-                            _save_checkpoint(
-                                candidate_path,
-                                model=model,
-                                optimizer=optimizer,
-                                configs=configs,
-                                step=step,
-                                epoch=epoch,
-                            )
 
-                    if final_step:
-                        return
-                    step += 1
-                    outer_bar.update(1)
+                if final_step:
+                    return
+                step += 1
+                outer_bar.update(1)
 
             epoch += 1
     finally:

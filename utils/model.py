@@ -96,6 +96,8 @@ def get_vocoder(config, device):
 def vocoder_infer(mels, vocoder, model_config, preprocess_config, lengths=None):
     if vocoder is None:
         raise ValueError("vocoder_infer requires an enabled vocoder")
+    if torch.is_tensor(mels) and mels.is_floating_point():
+        mels = mels.float()
     name = model_config["vocoder"]["model"]
     with torch.no_grad():
         if name == "MelGAN":
@@ -104,7 +106,7 @@ def vocoder_infer(mels, vocoder, model_config, preprocess_config, lengths=None):
             wavs = vocoder(mels).squeeze(1)
 
     wavs = (
-        wavs.cpu().numpy()
+        wavs.float().cpu().numpy()
         * preprocess_config["preprocessing"]["audio"]["max_wav_value"]
     ).astype("int16")
     wavs = [wav for wav in wavs]

@@ -68,6 +68,69 @@ def make_grad_scaler(amp):
     return torch.cuda.amp.GradScaler(enabled=True)
 
 
+def resolve_gpu_prefetch(train_config, device):
+    data_config = train_config.get("data", {}) or {}
+    return bool(data_config.get("gpu_prefetch", False)) and device.type == "cuda"
+
+
+def _is_fastspeech2_batch(value):
+    if not isinstance(value, (list, tuple)) or len(value) not in (6, 12, 13):
+        return False
+    if len(value) >= 3 and isinstance(value[2], (list, tuple)):
+        return False
+    return isinstance(value[0], (list, tuple)) and isinstance(value[1], (list, tuple))
+
+
+def iter_cpu_batches(loader):
+    for item in loader:
+        if _is_fastspeech2_batch(item):
+            yield item
+            continue
+        for batch in item:
+            if not _is_fastspeech2_batch(batch):
+                raise ValueError("Unexpected FastSpeech2 DataLoader batch shape")
+            yield batch
+
+
+def _record_stream(value, stream):
+    if torch.is_tensor(value):
+        if value.device.type == "cuda":
+            value.record_stream(stream)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _record_stream(item, stream)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _record_stream(item, stream)
+
+
+def iter_device_batches(loader, device, *, prefetch=False):
+    batches = iter_cpu_batches(loader)
+    if not prefetch or device.type != "cuda":
+        for batch in batches:
+            yield to_device(batch, device)
+        return
+
+    stream = torch.cuda.Stream()
+
+    def preload():
+        try:
+            batch = next(batches)
+        except StopIteration:
+            return None
+        with torch.cuda.stream(stream):
+            return to_device(batch, device)
+
+    next_batch = preload()
+    while next_batch is not None:
+        current_stream = torch.cuda.current_stream()
+        current_stream.wait_stream(stream)
+        batch = next_batch
+        _record_stream(batch, current_stream)
+        next_batch = preload()
+        yield batch
+
+
 def _to_tensor(value, device, dtype=None):
     if torch.is_tensor(value):
         tensor = value
@@ -173,6 +236,14 @@ def expand(values, durations):
     return np.array(out)
 
 
+def _to_numpy(value):
+    if torch.is_tensor(value):
+        if value.is_floating_point():
+            value = value.float()
+        return value.cpu().numpy()
+    return value
+
+
 def synth_one_sample(targets, predictions, vocoder, model_config, preprocess_config):
 
     basename = targets[0][0]
@@ -180,17 +251,17 @@ def synth_one_sample(targets, predictions, vocoder, model_config, preprocess_con
     mel_len = predictions[9][0].item()
     mel_target = targets[6][0, :mel_len].detach().transpose(0, 1)
     mel_prediction = predictions[1][0, :mel_len].detach().transpose(0, 1)
-    duration = targets[11][0, :src_len].detach().cpu().numpy()
+    duration = _to_numpy(targets[11][0, :src_len].detach())
     if preprocess_config["preprocessing"]["pitch"]["feature"] == "phoneme_level":
-        pitch = targets[9][0, :src_len].detach().cpu().numpy()
+        pitch = _to_numpy(targets[9][0, :src_len].detach())
         pitch = expand(pitch, duration)
     else:
-        pitch = targets[9][0, :mel_len].detach().cpu().numpy()
+        pitch = _to_numpy(targets[9][0, :mel_len].detach())
     if preprocess_config["preprocessing"]["energy"]["feature"] == "phoneme_level":
-        energy = targets[10][0, :src_len].detach().cpu().numpy()
+        energy = _to_numpy(targets[10][0, :src_len].detach())
         energy = expand(energy, duration)
     else:
-        energy = targets[10][0, :mel_len].detach().cpu().numpy()
+        energy = _to_numpy(targets[10][0, :mel_len].detach())
 
     with open(
         os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")
@@ -200,8 +271,8 @@ def synth_one_sample(targets, predictions, vocoder, model_config, preprocess_con
 
     fig = plot_mel(
         [
-            (mel_prediction.cpu().numpy(), pitch, energy),
-            (mel_target.cpu().numpy(), pitch, energy),
+            (_to_numpy(mel_prediction), pitch, energy),
+            (_to_numpy(mel_target), pitch, energy),
         ],
         stats,
         ["Synthetized Spectrogram", "Ground-Truth Spectrogram"],
@@ -236,31 +307,31 @@ def synth_samples(targets, predictions, vocoder, model_config, preprocess_config
         src_len = predictions[8][i].item()
         mel_len = predictions[9][i].item()
         mel_prediction = predictions[1][i, :mel_len].detach().transpose(0, 1)
-        duration = predictions[5][i, :src_len].detach().cpu().numpy()
+        duration = _to_numpy(predictions[5][i, :src_len].detach())
         if predictions[2] is None:
             if preprocess_config["preprocessing"]["pitch"]["feature"] == "phoneme_level":
-                pitch = targets[9][i, :src_len].detach().cpu().numpy()
-                pitch = expand(pitch, targets[11][i, :src_len].detach().cpu().numpy())
+                pitch = _to_numpy(targets[9][i, :src_len].detach())
+                pitch = expand(pitch, _to_numpy(targets[11][i, :src_len].detach()))
             else:
-                pitch = targets[9][i, :mel_len].detach().cpu().numpy()
+                pitch = _to_numpy(targets[9][i, :mel_len].detach())
         elif preprocess_config["preprocessing"]["pitch"]["feature"] == "phoneme_level":
-            pitch = predictions[2][i, :src_len].detach().cpu().numpy()
+            pitch = _to_numpy(predictions[2][i, :src_len].detach())
             pitch = expand(pitch, duration)
         else:
-            pitch = predictions[2][i, :mel_len].detach().cpu().numpy()
+            pitch = _to_numpy(predictions[2][i, :mel_len].detach())
         if predictions[3] is None:
             if preprocess_config["preprocessing"]["energy"]["feature"] == "phoneme_level":
-                energy = targets[10][i, :src_len].detach().cpu().numpy()
+                energy = _to_numpy(targets[10][i, :src_len].detach())
                 energy = expand(
-                    energy, targets[11][i, :src_len].detach().cpu().numpy()
+                    energy, _to_numpy(targets[11][i, :src_len].detach())
                 )
             else:
-                energy = targets[10][i, :mel_len].detach().cpu().numpy()
+                energy = _to_numpy(targets[10][i, :mel_len].detach())
         elif preprocess_config["preprocessing"]["energy"]["feature"] == "phoneme_level":
-            energy = predictions[3][i, :src_len].detach().cpu().numpy()
+            energy = _to_numpy(predictions[3][i, :src_len].detach())
             energy = expand(energy, duration)
         else:
-            energy = predictions[3][i, :mel_len].detach().cpu().numpy()
+            energy = _to_numpy(predictions[3][i, :mel_len].detach())
 
         with open(
             os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")
@@ -270,7 +341,7 @@ def synth_samples(targets, predictions, vocoder, model_config, preprocess_config
 
         fig = plot_mel(
             [
-                (mel_prediction.cpu().numpy(), pitch, energy),
+                (_to_numpy(mel_prediction), pitch, energy),
             ],
             stats,
             ["Synthetized Spectrogram"],

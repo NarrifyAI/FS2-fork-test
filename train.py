@@ -317,7 +317,8 @@ def main(args, configs):
         elif os.environ.get("FINETUNE_CHECKPOINT"):
             _load_finetune_checkpoint(os.environ["FINETUNE_CHECKPOINT"], model)
 
-    model = nn.DataParallel(model)
+    if torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
     num_param = get_param_num(model)
     loss_fn = FastSpeech2Loss(preprocess_config, model_config).to(device)
     print("Number of FastSpeech2 Parameters:", num_param)

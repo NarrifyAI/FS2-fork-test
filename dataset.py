@@ -3,6 +3,7 @@ import math
 import os
 
 import numpy as np
+import torch
 from torch.utils.data import Dataset
 
 from text import load_phoneme_inventory, text_to_sequence
@@ -17,6 +18,8 @@ class Dataset(Dataset):
         self.preprocessed_path = preprocess_config["path"]["preprocessed_path"]
         self.cleaners = preprocess_config["preprocessing"]["text"]["text_cleaners"]
         self.batch_size = train_config["optimizer"]["batch_size"]
+        data_config = train_config.get("data", {}) or {}
+        self.return_tensors = bool(data_config.get("pin_memory", False))
         self.prosody_config = preprocess_config["preprocessing"].get("prosody", {})
         self.use_frame_prosody = self.prosody_config.get("enabled", False)
         self.prosody_features = self.prosody_config.get(
@@ -184,6 +187,11 @@ class Dataset(Dataset):
         )
         if prosodies is not None:
             batch = batch + (prosodies,)
+        if self.return_tensors:
+            batch = tuple(
+                torch.from_numpy(item) if isinstance(item, np.ndarray) else item
+                for item in batch
+            )
         return batch
 
     def collate_fn(self, data):

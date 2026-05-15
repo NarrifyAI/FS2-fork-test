@@ -15,6 +15,16 @@ matplotlib.use("Agg")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def _to_tensor(value, device, dtype=None):
+    if torch.is_tensor(value):
+        tensor = value
+    else:
+        tensor = torch.from_numpy(value)
+    if dtype is not None and tensor.dtype != dtype:
+        tensor = tensor.to(dtype=dtype)
+    return tensor.to(device, non_blocking=True)
+
+
 def to_device(data, device):
     if len(data) in (12, 13):
         (
@@ -32,14 +42,14 @@ def to_device(data, device):
             durations,
         ) = data[:12]
 
-        speakers = torch.from_numpy(speakers).long().to(device)
-        texts = torch.from_numpy(texts).long().to(device)
-        src_lens = torch.from_numpy(src_lens).to(device)
-        mels = torch.from_numpy(mels).float().to(device)
-        mel_lens = torch.from_numpy(mel_lens).to(device)
-        pitches = torch.from_numpy(pitches).float().to(device)
-        energies = torch.from_numpy(energies).to(device)
-        durations = torch.from_numpy(durations).long().to(device)
+        speakers = _to_tensor(speakers, device, torch.long)
+        texts = _to_tensor(texts, device, torch.long)
+        src_lens = _to_tensor(src_lens, device)
+        mels = _to_tensor(mels, device, torch.float32)
+        mel_lens = _to_tensor(mel_lens, device)
+        pitches = _to_tensor(pitches, device, torch.float32)
+        energies = _to_tensor(energies, device)
+        durations = _to_tensor(durations, device, torch.long)
 
         batch = (
             ids,
@@ -56,16 +66,16 @@ def to_device(data, device):
             durations,
         )
         if len(data) == 13:
-            prosodies = torch.from_numpy(data[12]).float().to(device)
+            prosodies = _to_tensor(data[12], device, torch.float32)
             batch = batch + (prosodies,)
         return batch
 
     if len(data) == 6:
         (ids, raw_texts, speakers, texts, src_lens, max_src_len) = data
 
-        speakers = torch.from_numpy(speakers).long().to(device)
-        texts = torch.from_numpy(texts).long().to(device)
-        src_lens = torch.from_numpy(src_lens).to(device)
+        speakers = _to_tensor(speakers, device, torch.long)
+        texts = _to_tensor(texts, device, torch.long)
+        src_lens = _to_tensor(src_lens, device)
 
         return (ids, raw_texts, speakers, texts, src_lens, max_src_len)
 

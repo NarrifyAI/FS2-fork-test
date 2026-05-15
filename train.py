@@ -38,16 +38,22 @@ def _split_combined_config(raw):
     if not isinstance(raw, dict):
         raise ValueError("Forge FastSpeech2 config must be a YAML mapping")
     if {"preprocess", "model", "train"}.issubset(raw):
+        train_config = copy.deepcopy(raw["train"])
+        if "data" in raw and "data" not in train_config:
+            train_config["data"] = copy.deepcopy(raw["data"])
         return (
             copy.deepcopy(raw["preprocess"]),
             copy.deepcopy(raw["model"]),
-            copy.deepcopy(raw["train"]),
+            train_config,
         )
     if {"preprocess_config", "model_config", "train_config"}.issubset(raw):
+        train_config = copy.deepcopy(raw["train_config"])
+        if "data" in raw and "data" not in train_config:
+            train_config["data"] = copy.deepcopy(raw["data"])
         return (
             copy.deepcopy(raw["preprocess_config"]),
             copy.deepcopy(raw["model_config"]),
-            copy.deepcopy(raw["train_config"]),
+            train_config,
         )
     raise ValueError(
         "Forge FastSpeech2 config must contain preprocess/model/train sections"
@@ -260,6 +266,24 @@ def _write_training_message(train_log_path, message):
         handle.write(message + "\n")
 
 
+def _dataloader_kwargs(train_config):
+    data_config = train_config.get("data", {}) or {}
+    num_workers = max(0, int(data_config.get("num_workers", 0) or 0))
+    kwargs = {
+        "num_workers": num_workers,
+        "pin_memory": bool(data_config.get("pin_memory", False)),
+    }
+    if num_workers > 0:
+        kwargs["persistent_workers"] = bool(
+            data_config.get("persistent_workers", True)
+        )
+        kwargs["prefetch_factor"] = max(
+            1,
+            int(data_config.get("prefetch_factor", 2) or 2),
+        )
+    return kwargs
+
+
 def main(args, configs):
     print("Prepare training ...")
 
@@ -278,6 +302,7 @@ def main(args, configs):
         batch_size=loader_batch_size,
         shuffle=True,
         collate_fn=dataset.collate_fn,
+        **_dataloader_kwargs(train_config),
     )
 
     model, optimizer = get_model(args, configs, device, train=True)

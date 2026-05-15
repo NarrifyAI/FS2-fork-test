@@ -13,6 +13,24 @@ from dataset import Dataset
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def _dataloader_kwargs(train_config):
+    data_config = train_config.get("data", {}) or {}
+    num_workers = max(0, int(data_config.get("num_workers", 0) or 0))
+    kwargs = {
+        "num_workers": num_workers,
+        "pin_memory": bool(data_config.get("pin_memory", False)),
+    }
+    if num_workers > 0:
+        kwargs["persistent_workers"] = bool(
+            data_config.get("persistent_workers", True)
+        )
+        kwargs["prefetch_factor"] = max(
+            1,
+            int(data_config.get("prefetch_factor", 2) or 2),
+        )
+    return kwargs
+
+
 def evaluate(model, step, configs, logger=None, vocoder=None, return_losses=False):
     preprocess_config, model_config, train_config = configs
 
@@ -31,6 +49,7 @@ def evaluate(model, step, configs, logger=None, vocoder=None, return_losses=Fals
         batch_size=batch_size,
         shuffle=False,
         collate_fn=dataset.collate_fn,
+        **_dataloader_kwargs(train_config),
     )
 
     loss_fn = FastSpeech2Loss(preprocess_config, model_config).to(device)
